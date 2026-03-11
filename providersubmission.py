@@ -20,7 +20,7 @@ from dotenv import load_dotenv
 
 load_dotenv('secrets.env')
 
-server   = os.environ.get('server_name')
+DB_SERVER = os.environ.get('server_name')
 database = os.environ.get('db_name')
 username = os.environ.get('db_username')
 password = os.environ.get('db_password')
@@ -58,7 +58,7 @@ _CACHE_TTL  = 300  # seconds
 
 def get_conn():
     return pyodbc.connect(
-        'DRIVER={ODBC Driver 17 for SQL Server};SERVER=' + server +
+        'DRIVER={ODBC Driver 17 for SQL Server};SERVER=' + DB_SERVER +
         ';DATABASE=' + database + ';UID=' + username + ';PWD=' + password
     )
 
