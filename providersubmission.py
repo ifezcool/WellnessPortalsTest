@@ -186,8 +186,8 @@ app = dash.Dash(
     external_stylesheets=[dbc.themes.BOOTSTRAP],
     suppress_callback_exceptions=True
 )
-server_wsgi = app.server
-
+#server_wsgi = app.server
+server = app.server
 
 # =============================================================================
 # LOADING SCREEN  (shown on portal entry while data loads into stores)
