@@ -1,7 +1,7 @@
 # Use an official Python runtime as a parent image
 FROM python:3.10-slim
 
-# Install system dependencies for pyodbc and MS SQL Server
+# Install system dependencies
 RUN apt-get update && apt-get install -y \
     unixodbc-dev \
     unixodbc \
@@ -9,8 +9,11 @@ RUN apt-get update && apt-get install -y \
     g++ \
     curl \
     gnupg \
-    && curl https://packages.microsoft.com/keys/microsoft.asc | apt-key add - \
-    && curl https://packages.microsoft.com/config/debian/11/prod.list > /etc/apt/sources.list.d/mssql-release.list \
+    && apt-get clean
+
+# Modern way to add Microsoft's GPG key and repository for Debian 12
+RUN curl -fsSL https://packages.microsoft.com/keys/microsoft.asc | gpg --dearmor -o /usr/share/keyrings/microsoft-prod.gpg \
+    && curl -sSL https://packages.microsoft.com/config/debian/12/prod.list > /etc/apt/sources.list.d/mssql-release.list \
     && apt-get update \
     && ACCEPT_EULA=Y apt-get install -y msodbcsql17
 
@@ -28,5 +31,5 @@ RUN pip install gunicorn
 EXPOSE 10000
 
 # Run the app using Gunicorn
-# Note: 'providersubmission' matches your filename, 'server' matches your 'server = app.server' line
+# Ensure 'providersubmission' matches your filename and 'server' matches your app.server variable
 CMD ["gunicorn", "--bind", "0.0.0.0:10000", "providersubmission:server"]
