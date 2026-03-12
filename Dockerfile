@@ -1,4 +1,4 @@
-FROM python:3.12-slim-bookworm
+FROM python:3.11-slim-bookworm
 
 # === Install ODBC Driver 17 for SQL Server ===
 RUN apt-get update && apt-get install -y \
@@ -18,7 +18,11 @@ COPY . /app
 
 # Install Python packages
 RUN pip install --no-cache-dir -r requirements.txt
-
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    && rm -rf /var/lib/apt/lists/*
+# Upgrade pip early (your log shows 25.0.1 → 26.0.1 is available)
+RUN pip install --upgrade pip setuptools wheel
 EXPOSE 8050
 
 # Render automatically gives us $PORT — we bind to it
