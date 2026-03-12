@@ -14,18 +14,15 @@ RUN curl -fsSL https://packages.microsoft.com/keys/microsoft.asc | gpg --dearmor
     ACCEPT_EULA=Y apt-get install -y msodbcsql17 && \
     rm -rf /var/lib/apt/lists/*
 
-# === Upgrade pip, setuptools, wheel before installing requirements ===
-RUN pip install --upgrade pip setuptools wheel
-
 WORKDIR /app
 
-# Copy code (secrets are NOT copied)
 COPY . /app
 
-# Install Python packages
-RUN pip install --no-cache-dir -r requirements.txt
+# Upgrade pip+setuptools+wheel AND install requirements in one RUN so the
+# upgraded setuptools is present in every isolated build env pip creates
+RUN pip install --upgrade pip setuptools wheel && \
+    pip install --no-cache-dir -r requirements.txt
 
 EXPOSE 8050
 
-# Render automatically gives us $PORT — we bind to it
 CMD ["sh", "-c", "gunicorn --bind 0.0.0.0:${PORT:-8050} --workers 2 --timeout 120 --log-level info providersubmission:server_wsgi"]
