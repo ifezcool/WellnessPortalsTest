@@ -1,35 +1,25 @@
-# Use an official Python runtime as a parent image
-FROM python:3.10-slim
+FROM python:3.12-slim-bookworm
 
-# Install system dependencies
+# === Install ODBC Driver 17 for SQL Server ===
 RUN apt-get update && apt-get install -y \
-    unixodbc-dev \
-    unixodbc \
-    libsqlite3-dev \
-    g++ \
-    curl \
-    gnupg \
-    && apt-get clean
+    ca-certificates curl gnupg unixodbc unixodbc-dev \
+    && rm -rf /var/lib/apt/lists/*
 
-# Modern way to add Microsoft's GPG key and repository for Debian 12
-RUN curl -fsSL https://packages.microsoft.com/keys/microsoft.asc | gpg --dearmor -o /usr/share/keyrings/microsoft-prod.gpg \
-    && curl -sSL https://packages.microsoft.com/config/debian/12/prod.list > /etc/apt/sources.list.d/mssql-release.list \
-    && apt-get update \
-    && ACCEPT_EULA=Y apt-get install -y msodbcsql17
+RUN curl -fsSL https://packages.microsoft.com/keys/microsoft.asc | gpg --dearmor -o /etc/apt/trusted.gpg.d/microsoft.gpg && \
+    echo "deb [arch=amd64,arm64,armhf signed-by=/etc/apt/trusted.gpg.d/microsoft.gpg] https://packages.microsoft.com/debian/12/prod bookworm main" > /etc/apt/sources.list.d/mssql-release.list && \
+    apt-get update && \
+    ACCEPT_EULA=Y apt-get install -y msodbcsql17 && \
+    rm -rf /var/lib/apt/lists/*
 
-# Set the working directory
 WORKDIR /app
 
-# Copy the current directory contents into the container at /app
-COPY . .
+# Copy code (secrets are NOT copied)
+COPY . /app
 
-# Install Python dependencies
+# Install Python packages
 RUN pip install --no-cache-dir -r requirements.txt
-RUN pip install gunicorn
 
-# Expose the port Render uses
-EXPOSE 10000
+EXPOSE 8050
 
-# Run the app using Gunicorn
-# Ensure 'providersubmission' matches your filename and 'server' matches your app.server variable
-CMD ["gunicorn", "--bind", "0.0.0.0:10000", "providersubmission:server"]
+# Render automatically gives us $PORT — we bind to it
+CMD ["sh", "-c", "gunicorn --bind 0.0.0.0:${PORT:-8050} --workers 2 --timeout 120 --log-level info providersubmission:server_wsgi"]

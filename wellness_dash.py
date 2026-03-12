@@ -272,6 +272,11 @@ conn = pyodbc.connect(
     + password
 )
 
+wellness_df = None
+wellness_providers = None
+loyalty_enrollees = None
+filled_wellness_df = None
+
 def load_all_data():
     global wellness_df, wellness_providers, loyalty_enrollees, filled_wellness_df
     query1 = "SELECT * from vw_wellness_enrollee_portal_update"
@@ -287,6 +292,7 @@ def load_all_data():
     wellness_df['memberno'] = wellness_df['memberno'].astype(int).astype(str)
     filled_wellness_df['MemberNo'] = filled_wellness_df['MemberNo'].astype(str)
     loyalty_enrollees['MemberNo'] = loyalty_enrollees['MemberNo'].astype(str)
+    print("Data loaded successfully!")
 
 load_all_data()
 
@@ -310,87 +316,95 @@ for i in list('abcdefghijklmnopqrst'):
     initial_user_data[f'resp_4_{i}'] = 'Never'
 
 app.layout = html.Div([
-    dcc.Location(id='url', refresh=True),
-    dcc.Store(id='user-data-store', data=initial_user_data),
-    dcc.Store(id='enrollee-data-store', data={}),
-    dcc.Store(id='submission-trigger', data=0),
-    dcc.Store(id='questionnaire-responses', data={}),
-    dcc.Store(id='session-store', data=''),
-    
-    html.Div([
-        dcc.Location(id="url-welcome", refresh=True),
-        
-        html.Div(className="purple-skew"),
-        html.Div(className="green-blob"),
-        
-        html.Div(
-            className="position-relative w-100",
-            style={"maxWidth": "520px", "zIndex": "10", "margin": "0 auto"},
-            children=[
-                html.Div([
-                    html.Div(className="logo-container mb-4", children=[
-                        Svg(
-                            width="32", height="32", viewBox="0 0 24 24",
-                            fill="none", stroke="white",
-                            style={"strokeWidth": "2", "strokeLinecap": "round", "strokeLinejoin": "round"},
-                            children=[
-                                Path(d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z"),
-                                Path(d="m9 12 2 2 4-4")
-                            ]
-                        )
-                    ]),
-                    html.H1("Wellness Portal", className="text-4xl fw-bold mb-2", style={"color": "#44337A", "fontSize": "2rem"}),
-                    html.P("AVON HMO Enrollee Annual Wellness Portal. Check your eligibility and book your annual wellness checkup.",
-                           className="text-lg mb-4", style={"color": "#718096"}),
-                ], className="text-center mb-5"),
-
-                dbc.Card([
-                    dbc.CardBody([
+    dcc.Loading(
+        id="loading",
+        type="circle",
+        fullscreen=True,
+        color="#6B46C1",
+        children=html.Div([
+            dcc.Location(id='url', refresh=True),
+            dcc.Store(id='user-data-store', data=initial_user_data),
+            dcc.Store(id='enrollee-data-store', data={}),
+            dcc.Store(id='submission-trigger', data=0),
+            dcc.Store(id='questionnaire-responses', data={}),
+            dcc.Store(id='session-store', data=''),
+            
+            html.Div([
+                dcc.Location(id="url-welcome", refresh=True),
+                
+                html.Div(className="purple-skew"),
+                html.Div(className="green-blob"),
+                
+                html.Div(
+                    className="position-relative w-100",
+                    style={"maxWidth": "520px", "zIndex": "10", "margin": "0 auto"},
+                    children=[
                         html.Div([
-                            html.Label("Member Number / Policy ID", className="fw-medium mb-2", style={"color": "#44337A"}),
-                            dcc.Input(
-                                id='enrollee-id-input',
-                                type='text',
-                                placeholder='Enter your Member ID',
-                                className='form-control form-input mb-3',
-                                style={"fontSize": "18px"}
-                            ),
-                            html.Div(id='eligibility-message'),
-                            
-                            dbc.Button([
-                                html.Span("Check Eligibility ", className="me-2"),
-                                html.Span("→")
-                            ], id='member-id-submit-btn', color="primary",
-                               className="w-100 btn-primary-custom d-flex align-items-center justify-content-center",
-                               style={"color": "white"}),
-                            
-                            html.Small("Enter your Member ID from URL (?member=12345) or manually", 
-                                      className="d-block text-center mt-3", style={"color": "rgba(113, 128, 150, 0.6)"})
-                        ], className="p-2")
-                    ])
-                ], className="card-glass border-0", style={"borderRadius": "24px"}),
+                            html.Div(className="logo-container mb-4", children=[
+                                Svg(
+                                    width="32", height="32", viewBox="0 0 24 24",
+                                    fill="none", stroke="white",
+                                    style={"strokeWidth": "2", "strokeLinecap": "round", "strokeLinejoin": "round"},
+                                    children=[
+                                        Path(d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z"),
+                                        Path(d="m9 12 2 2 4-4")
+                                    ]
+                                )
+                            ]),
+                            html.H1("Wellness Portal", className="text-4xl fw-bold mb-2", style={"color": "#44337A", "fontSize": "2rem"}),
+                            html.P("AVON HMO Enrollee Annual Wellness Portal. Check your eligibility and book your annual wellness checkup.",
+                                   className="text-lg mb-4", style={"color": "#718096"}),
+                        ], className="text-center mb-5"),
 
-                html.Div([
-                    dbc.Row([
-                        dbc.Col(id='already-booked-section', width=12)
-                    ]),
-                    
-                    dbc.Row([
-                        dbc.Col(id='enrollment-form-section', width=12)
-                    ]),
-                ], className="mt-4"),
+                        dbc.Card([
+                            dbc.CardBody([
+                                html.Div([
+                                    html.Label("Member Number / Policy ID", className="fw-medium mb-2", style={"color": "#44337A"}),
+                                    dcc.Input(
+                                        id='enrollee-id-input',
+                                        type='text',
+                                        placeholder='Enter your Member ID',
+                                        className='form-control form-input mb-3',
+                                        style={"fontSize": "18px"}
+                                    ),
+                                    html.Div(id='eligibility-message'),
+                                    
+                                    dbc.Button([
+                                        html.Span("Check Eligibility ", className="me-2"),
+                                        html.Span("→")
+                                    ], id='member-id-submit-btn', color="primary",
+                                       className="w-100 btn-primary-custom d-flex align-items-center justify-content-center",
+                                       style={"color": "white"}),
+                                    
+                                    html.Small("Enter your Member ID from URL (?member=12345) or manually", 
+                                              className="d-block text-center mt-3", style={"color": "rgba(113, 128, 150, 0.6)"})
+                                ], className="p-2")
+                            ])
+                        ], className="card-glass border-0", style={"borderRadius": "24px"}),
 
-                html.P(f"© {dt.datetime.now().year} AVON HMO. All rights reserved.",
-                       className="text-center mt-4 small", style={"color": "rgba(113, 128, 150, 0.6)"})
-            ]
-        )
-    ], className="gradient-bg min-vh-100 d-flex align-items-center justify-content-center p-4 position-relative overflow-hidden"),
-    
-    dbc.Modal([
-        dbc.ModalHeader("Submission Successful", style={"fontFamily": "Playfair Display, serif", "color": "#44337A"}),
-        dbc.ModalBody(id='submission-message'),
-        dbc.ModalFooter(dbc.Button("Close", id="close-modal", className="btn-primary-custom", style={"color": "white"}))
-    ], id="success-modal", is_open=False, size="lg", centered=True),
+                        html.Div([
+                            dbc.Row([
+                                dbc.Col(id='already-booked-section', width=12)
+                            ]),
+                            
+                            dbc.Row([
+                                dbc.Col(id='enrollment-form-section', width=12)
+                            ]),
+                        ], className="mt-4"),
+
+                        html.P(f"© {dt.datetime.now().year} AVON HMO. All rights reserved.",
+                               className="text-center mt-4 small", style={"color": "rgba(113, 128, 150, 0.6)"})
+                    ]
+                )
+            ], className="gradient-bg min-vh-100 d-flex align-items-center justify-content-center p-4 position-relative overflow-hidden"),
+            
+            dbc.Modal([
+                dbc.ModalHeader("Submission Successful", style={"fontFamily": "Playfair Display, serif", "color": "#44337A"}),
+                dbc.ModalBody(id='submission-message'),
+                dbc.ModalFooter(dbc.Button("Close", id="close-modal", className="btn-primary-custom", style={"color": "white"}))
+            ], id="success-modal", is_open=False, size="lg", centered=True),
+        ])
+    ),
 ])
 
 
@@ -407,15 +421,8 @@ app.layout = html.Div([
      State('enrollee-data-store', 'data')]
 )
 def check_eligibility(url_search, n_clicks, n_submit, enrollee_id, stored_data):
-    # Check if triggered by URL, button or enter key
     ctx = callback_context
     triggered_id = ctx.triggered[0]['prop_id'].split('.')[0] if ctx.triggered else None
-    
-    # Reload filled data
-    global filled_wellness_df
-    query2 = 'select MemberNo, MemberName, Client, email, state, selected_provider, Wellness_benefits, selected_date, selected_session, date_submitted from demo_tbl_annual_wellness_enrollee_data a where a.PolicyEndDate = (select max(PolicyEndDate) from demo_tbl_annual_wellness_enrollee_data b where a.MemberNo = b.MemberNo)'
-    filled_wellness_df = pd.read_sql(query2, conn)
-    filled_wellness_df['MemberNo'] = filled_wellness_df['MemberNo'].astype(str)
     
     if triggered_id == 'url' or not enrollee_id:
         parsed = urllib.parse.parse_qs(urllib.parse.urlparse(url_search).query)
@@ -1416,4 +1423,11 @@ def send_confirmation_email(enrollee_id, member_name, email, provider, benefits,
 
 
 if __name__ == '__main__':
+    print("=" * 60, flush=True)
+    print("Starting Wellness Portal...", flush=True)
+    print("Loading data from database... (this may take a moment)", flush=True)
+    print("=" * 60, flush=True)
+    print("\nApp running at: http://127.0.0.1:8050", flush=True)
+    print("App running at: http://localhost:8050", flush=True)
+    print("\nNote: Page will load fully once data finishes loading\n", flush=True)
     app.run(debug=True, port=8050)
