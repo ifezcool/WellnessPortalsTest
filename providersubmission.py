@@ -4,7 +4,7 @@ import dash_bootstrap_components as dbc
 from dash import dash_table
 import pandas as pd
 import datetime as dt
-import pyodbc
+from sqlalchemy import create_engine, text
 import os
 import time
 import base64
@@ -17,6 +17,7 @@ from email.mime.multipart import MIMEMultipart
 from email.mime.base import MIMEBase
 from email import encoders
 from dotenv import load_dotenv
+import urllib.parse
 
 load_dotenv('secrets.env')
 
@@ -26,10 +27,25 @@ username = os.environ.get('db_username')
 password = os.environ.get('db_password')
 conn_str = os.environ.get('conn_str')
 
+def get_engine():
+    params = urllib.parse.quote_plus(
+        f"DRIVER={{ODBC Driver 17 for SQL Server}};"
+        f"SERVER={server};"
+        f"DATABASE={database};"
+        f"UID={username};"
+        f"PWD={password};"
+        "Encrypt=yes;"
+        "TrustServerCertificate=yes;"
+        "Connection Timeout=30;"
+    )
+    return create_engine(f"mssql+pyodbc:///?odbc_connect={params}")
+    
+engine = get_engine()
+
 # =============================================================================
 # SQL QUERIES  (defined first — background thread references these)
 # =============================================================================
-query1 = "SELECT * from vw_wellness_enrollee_portal_update"
+#query1 = "SELECT * from vw_wellness_enrollee_portal_update"
 query2 = (
     "select MemberNo, MemberName, Client, PolicyStartDate, PolicyEndDate, email, state, selected_provider, "
     "Wellness_benefits, selected_date, selected_session, date_submitted, "
@@ -39,7 +55,7 @@ query2 = (
 )
 query3 = (
     "select a.*, name as ProviderName "
-    "from updated_wellness_providers a "
+    "from demo_Updated_Wellness_Providers a "
     "left join [dbo].[tbl_ProviderList_stg] b on a.code = b.code"
 )
 query4 = (
@@ -48,7 +64,7 @@ query4 = (
     "INNER JOIN demo_tbl_annual_wellness_enrollee_data a ON r.memberno = a.memberno "
     "WHERE r.date_submitted < a.PolicyStartDate OR r.date_submitted > a.PolicyEndDate"
 )
-query5 = "SELECT * FROM Wellness_Plans_and_Benefits"
+query5 = "SELECT * FROM demo_Wellness_Plans_and_Benefits"
 
 # =============================================================================
 # DB + CACHE  (thread-safe, 5-min TTL, pre-warms at server startup)
@@ -57,12 +73,6 @@ _cache      = {}
 _cache_lock = _threading.Lock()
 _CACHE_TTL  = 300  # seconds
 
-def get_conn():
-    return pyodbc.connect(
-        'DRIVER={ODBC Driver 17 for SQL Server};SERVER=' + server +
-        ';DATABASE=' + database + ';UID=' + username + ';PWD=' + password
-    )
-
 def cached_read_sql(query, ttl=_CACHE_TTL):
     now = time.time()
     with _cache_lock:
@@ -70,9 +80,8 @@ def cached_read_sql(query, ttl=_CACHE_TTL):
             df, ts = _cache[query]
             if now - ts < ttl:
                 return df.copy()
-    conn = get_conn()
-    df = pd.read_sql(query, conn)
-    conn.close()
+    with engine.connect() as conn:
+        df = pd.read_sql(query, conn)
     with _cache_lock:
         _cache[query] = (df, now)
     return df.copy()
@@ -84,7 +93,7 @@ def invalidate_cache():
 def _prewarm():
     """Mirrors Streamlit's @st.cache_data — runs all queries at server startup."""
     try:
-        for q in [query1, query2, query3, query4]:
+        for q in [query2, query3, query4]:
             cached_read_sql(q)
         print("[cache] Pre-warm complete.")
     except Exception as e:
@@ -110,15 +119,13 @@ PA_TESTS_OPTIONS = [
 ]
 
 def login_user(username_val, password_val):
-    conn = get_conn()
-    cursor = conn.cursor()
-    cursor.execute(
-        "SELECT * FROM tbl_provider_wellness_submission_portal_users WHERE code = ?",
-        username_val
-    )
-    user = cursor.fetchone()
-    conn.close()
-    if user and password_val:
+    with engine.connect() as conn:
+        result = conn.execute(
+            text("SELECT * FROM tbl_provider_wellness_submission_portal_users WHERE code = :code AND password = :password"),
+            {"code": username_val, "password": password_val}
+        )
+        user = result.fetchone()
+    if user:
         return user[0], user[1], user[2]
     return None, None, None
 
@@ -412,13 +419,13 @@ services_layout = dbc.Container([
 # APP LAYOUT
 # =============================================================================
 app.layout = html.Div([
-    dcc.Location(id="url", refresh=True),
+    dcc.Location(id="url", refresh=False),
     dcc.Store(id="auth-store", storage_type="session",
               data={"authenticated": False, "username": None, "providername": None}),
     # Triggers the data-load callback when set to False (portal entry)
     dcc.Store(id="data-ready-store", data=False),
     # Data stores populated once on portal entry — all callbacks read from these
-    dcc.Store(id="store-q1", data=None),
+    #dcc.Store(id="store-q1", data=None),
     dcc.Store(id="store-q2", data=None),
     dcc.Store(id="store-q3", data=None),
     dcc.Store(id="store-q4", data=None),
@@ -480,7 +487,7 @@ def render_layout(auth_data):
 # --- Step 3: auth-store authenticated → fetch all data into stores (spinner visible) ---
 # Input is auth-store (not data-ready-store) to avoid circular trigger.
 @app.callback(
-    Output("store-q1",         "data"),
+    #Output("store-q1",         "data"),
     Output("store-q2",         "data"),
     Output("store-q3",         "data"),
     Output("store-q4",         "data"),
@@ -491,13 +498,13 @@ def render_layout(auth_data):
 )
 def load_portal_data(auth_data):
     if not auth_data or not auth_data.get("authenticated"):
-        return None, None, None, None, None, False
-    q1 = cached_read_sql(query1).to_dict('records')
+        return None, None, None, None, False
+    #q1 = cached_read_sql(query1).to_dict('records')
     q2 = cached_read_sql(query2).to_dict('records')
     q3 = cached_read_sql(query3).to_dict('records')
     q4 = cached_read_sql(query4).to_dict('records')
     q5 = cached_read_sql(query5).to_dict('records')
-    return q1, q2, q3, q4, q5, True
+    return q2, q3, q4, q5, True
 
 
 # --- Step 4: data-ready-store=True → swap loading screen for real portal ---
@@ -701,16 +708,24 @@ def submit_results(n_clicks, member, pa_code, tests_conducted, test_date,
         bsc.get_blob_client(container=cont, blob=blob_path).upload_blob(file_bytes, overwrite=True)
         uploaded_files.append((fn, file_bytes))
 
-    conn = get_conn()
-    conn.cursor().execute(
-        "INSERT INTO demo_tbl_enrollee_wellness_result_data "
-        "(memberno,membername,providername,pacode,tests_conducted,test_date,test_result_link,date_submitted) "
-        "VALUES (?,?,?,?,?,?,?,GETDATE())",
-        member_no, row['MemberName'], auth_data.get("providername",""),
-        pa_code, ', '.join(tests_conducted), test_date,
-        f"https://{bsc.account_name}.blob.core.windows.net/{cont}/{folder}"
-    )
-    conn.commit(); conn.close()
+    with engine.connect() as conn:
+        conn.execute(
+            text("""
+                INSERT INTO demo_tbl_enrollee_wellness_result_data 
+                (memberno, membername, providername, pacode, tests_conducted, test_date, test_result_link, date_submitted) 
+                VALUES (:memberno, :membername, :providername, :pacode, :tests_conducted, :test_date, :test_result_link, GETDATE())
+            """),
+            {
+                "memberno": member_no,
+                "membername": row['MemberName'],
+                "providername": auth_data.get("providername", ""),
+                "pacode": pa_code,
+                "tests_conducted": ', '.join(tests_conducted),
+                "test_date": test_date,
+                "test_result_link": f"https://{bsc.account_name}.blob.core.windows.net/{cont}/{folder}"
+            }
+        )
+        conn.commit()
     invalidate_cache()
 
     selected_date_str = row['selected_date'].strftime("%Y-%m-%d") if hasattr(row.get('selected_date'), 'strftime') else str(row.get('selected_date', ''))
@@ -787,14 +802,14 @@ def show_claims_content(member, provider, q2_data):
     Output("contact-content",       "children"),
     Input("contact-search-button",  "n_clicks"),
     State("contact-enrollee-id",    "value"),
-    State("store-q1",   "data"),
+    #State("store-q1",   "data"),
     State("store-q2",   "data"),
     State("store-q3",   "data"),
     State("store-q4",   "data"),
     State("auth-store", "data"),
     prevent_initial_call=True,
 )
-def search_enrollee(n_clicks, enrollee_id, q1_data, q2_data, q3_data, q4_data, auth_data):
+def search_enrollee(n_clicks, enrollee_id, q2_data, q3_data, q4_data, auth_data):
     if not auth_data or not auth_data.get("authenticated"):
         return ""
     if not auth_data.get("username","").startswith("contact"):
@@ -809,10 +824,6 @@ def search_enrollee(n_clicks, enrollee_id, q1_data, q2_data, q3_data, q4_data, a
     filled_df = pd.DataFrame(q2_data)
     filled_df['ProviderName'] = filled_df['PA_Provider'].str.split('-').str[0].str.strip()
     filled_df['MemberNo']     = filled_df['MemberNo'].astype(str)
-
-    wellness_df = pd.DataFrame(q1_data) if q1_data else pd.DataFrame(columns=['memberno'])
-    if not wellness_df.empty:
-        wellness_df['memberno'] = wellness_df['memberno'].astype(str)
 
     result_df = pd.DataFrame(q4_data) if q4_data else pd.DataFrame(columns=['memberno'])
     if not result_df.empty:
@@ -911,12 +922,7 @@ def search_enrollee(n_clicks, enrollee_id, q1_data, q2_data, q3_data, q4_data, a
             html.Hr(),
             result_alert
         ])
-
-    elif not wellness_df.empty and enrollee_id in wellness_df['memberno'].values:
-        return dbc.Alert(
-            "Enrollee has not booked a wellness test. "
-            "Advise them to book via the Wellness Portal.", color="warning"
-        )
+    
 
     return dbc.Alert("Invalid Member ID or Enrollee not eligible for Wellness Test.", color="danger")
 
@@ -1014,14 +1020,23 @@ def update_pa_code(n_clicks, enrollee_id, policy_year, pacode, pa_tests, pa_prov
     
     date_submitted = target_row['date_submitted']
     
-    conn = get_conn()
-    conn.cursor().execute(
-        "UPDATE demo_tbl_annual_wellness_enrollee_data "
-        "SET IssuedPACode=?, PA_Tests=?, PA_Provider=?, PAIssueDate=? "
-        "WHERE MemberNo=? AND date_submitted=?",
-        pacode, ','.join(pa_tests), pa_provider, pa_issue_date, enrollee_id, date_submitted
-    )
-    conn.commit(); conn.close()
+    with engine.connect() as conn:
+        conn.execute(
+            text("""
+                UPDATE demo_tbl_annual_wellness_enrollee_data 
+                SET IssuedPACode = :pacode, PA_Tests = :pa_tests, PA_Provider = :pa_provider, PAIssueDate = :pa_issue_date 
+                WHERE MemberNo = :memberno AND date_submitted = :date_submitted
+            """),
+            {
+                "pacode": pacode,
+                "pa_tests": ','.join(pa_tests),
+                "pa_provider": pa_provider,
+                "pa_issue_date": pa_issue_date,
+                "memberno": enrollee_id,
+                "date_submitted": date_submitted
+            }
+        )
+        conn.commit()
     invalidate_cache()
 
     enrollee_email = target_row.get('email', '')
@@ -1218,13 +1233,22 @@ def add_provider(n_clicks, code, state, provider_name, address, provider, locati
         return dbc.Alert(f"Please fill: {', '.join(missing)}", color="danger")
     
     try:
-        conn = get_conn()
-        conn.cursor().execute(
-            "INSERT INTO Updated_Wellness_Providers (CODE, STATE, PROVIDER_NAME, ADDRESS, PROVIDER, Location) VALUES (?, ?, ?, ?, ?, ?)",
-            code, state, provider_name, address, provider, location
-        )
-        conn.commit()
-        conn.close()
+        with engine.connect() as conn:
+            conn.execute(
+                text("""
+                    INSERT INTO demo_Updated_Wellness_Providers (CODE, STATE, PROVIDER_NAME, ADDRESS, PROVIDER, Location) 
+                    VALUES (:code, :state, :provider_name, :address, :provider, :location)
+                """),
+                {
+                    "code": code,
+                    "state": state,
+                    "provider_name": provider_name,
+                    "address": address,
+                    "provider": provider,
+                    "location": location
+                }
+            )
+            conn.commit()
         invalidate_cache()
         return dbc.Alert("Provider added successfully!", color="success")
     except Exception as e:
@@ -1248,16 +1272,26 @@ def save_providers(n_clicks, table_data, auth_data):
         return ""
     
     try:
-        conn = get_conn()
-        for row in table_data:
-            code = row.get('CODE')
-            if code:
-                conn.cursor().execute(
-                    "UPDATE Updated_Wellness_Providers SET STATE = ?, PROVIDER_NAME = ?, ADDRESS = ?, PROVIDER = ?, Location = ? WHERE CODE = ?",
-                    row.get('STATE'), row.get('PROVIDER_NAME'), row.get('ADDRESS'), row.get('PROVIDER'), row.get('Location'), code
-                )
-        conn.commit()
-        conn.close()
+        with engine.connect() as conn:
+            for row in table_data:
+                code = row.get('CODE')
+                if code:
+                    conn.execute(
+                        text("""
+                            UPDATE demo_Updated_Wellness_Providers 
+                            SET STATE = :state, PROVIDER_NAME = :provider_name, ADDRESS = :address, PROVIDER = :provider, Location = :location 
+                            WHERE CODE = :code
+                        """),
+                        {
+                            "state": row.get('STATE'),
+                            "provider_name": row.get('PROVIDER_NAME'),
+                            "address": row.get('ADDRESS'),
+                            "provider": row.get('PROVIDER'),
+                            "location": row.get('Location'),
+                            "code": code
+                        }
+                    )
+            conn.commit()
         invalidate_cache()
         return dbc.Alert("Changes saved successfully!", color="success")
     except Exception as e:
@@ -1282,16 +1316,15 @@ def delete_providers(n_clicks, selected_rows, table_data, auth_data):
         return ""
     
     try:
-        conn = get_conn()
-        for idx in selected_rows:
-            code = table_data[idx].get('CODE')
-            if code:
-                conn.cursor().execute(
-                    "DELETE FROM Updated_Wellness_Providers WHERE CODE = ?",
-                    code
-                )
-        conn.commit()
-        conn.close()
+        with engine.connect() as conn:
+            for idx in selected_rows:
+                code = table_data[idx].get('CODE')
+                if code:
+                    conn.execute(
+                        text("DELETE FROM demo_Updated_Wellness_Providers WHERE CODE = :code"),
+                        {"code": code}
+                    )
+            conn.commit()
         invalidate_cache()
         return dbc.Alert("Selected provider(s) deleted successfully!", color="success")
     except Exception as e:
@@ -1323,13 +1356,21 @@ def add_plan(n_clicks, client_name, policy_no, client_plan, customization, welln
         return dbc.Alert(f"Please fill: {', '.join(missing)}", color="danger")
     
     try:
-        conn = get_conn()
-        conn.cursor().execute(
-            "INSERT INTO Wellness_Plans_and_Benefits (CLIENT_NAME, PolicyNo, CLIENT_PLAN, CUSTOMIZATION, WELLNESS_BENEFITS) VALUES (?, ?, ?, ?, ?)",
-            client_name, policy_no, client_plan, customization, wellness_benefits
-        )
-        conn.commit()
-        conn.close()
+        with engine.connect() as conn:
+            conn.execute(
+                text("""
+                    INSERT INTO demo_Wellness_Plans_and_Benefits (CLIENT_NAME, PolicyNo, CLIENT_PLAN, CUSTOMIZATION, WELLNESS_BENEFITS) 
+                    VALUES (:client_name, :policy_no, :client_plan, :customization, :wellness_benefits)
+                """),
+                {
+                    "client_name": client_name,
+                    "policy_no": policy_no,
+                    "client_plan": client_plan,
+                    "customization": customization,
+                    "wellness_benefits": wellness_benefits
+                }
+            )
+            conn.commit()
         invalidate_cache()
         return dbc.Alert("Plan added successfully!", color="success")
     except Exception as e:
@@ -1353,17 +1394,27 @@ def save_plans(n_clicks, table_data, auth_data):
         return ""
     
     try:
-        conn = get_conn()
-        for row in table_data:
-            client_name = row.get('CLIENT_NAME')
-            policy_no = row.get('PolicyNo')
-            if client_name and policy_no:
-                conn.cursor().execute(
-                    "UPDATE Wellness_Plans_and_Benefits SET CLIENT_PLAN = ?, CUSTOMIZATION = ?, WELLNESS_BENEFITS = ? WHERE CLIENT_NAME = ? AND PolicyNo = ?",
-                    row.get('CLIENT_PLAN'), row.get('CUSTOMIZATION'), row.get('WELLNESS_BENEFITS'), client_name, policy_no
-                )
-        conn.commit()
-        conn.close()
+        with engine.connect() as conn:
+            for row in table_data:
+                client_name = row.get('CLIENT_NAME')
+                policy_no = row.get('PolicyNo')
+                if client_name and policy_no:
+                    conn.execute(
+                        text("""
+                            UPDATE demo_Wellness_Plans_and_Benefits 
+                            SET CLIENT_PLAN = :client_plan, CUSTOMIZATION = :customization, WELLNESS_BENEFITS = :wellness_benefits 
+                            WHERE CLIENT_NAME = :client_name AND PolicyNo = :policy_no
+                        """),
+                        {
+                            "client_plan": row.get('CLIENT_PLAN'),
+                            "customization": row.get('CUSTOMIZATION'),
+                            "wellness_benefits": row.get('WELLNESS_BENEFITS'),
+                            "client_name": client_name,
+                            "policy_no": policy_no
+                        }
+                    )
+                    
+            conn.commit()
         invalidate_cache()
         return dbc.Alert("Changes saved successfully!", color="success")
     except Exception as e:
@@ -1388,17 +1439,16 @@ def delete_plans(n_clicks, selected_rows, table_data, auth_data):
         return ""
     
     try:
-        conn = get_conn()
-        for idx in selected_rows:
-            client_name = table_data[idx].get('CLIENT_NAME')
-            policy_no = table_data[idx].get('PolicyNo')
-            if client_name and policy_no:
-                conn.cursor().execute(
-                    "DELETE FROM Wellness_Plans_and_Benefits WHERE CLIENT_NAME = ? AND PolicyNo = ?",
-                    client_name, policy_no
-                )
-        conn.commit()
-        conn.close()
+        with engine.connect() as conn:
+            for idx in selected_rows:
+                client_name = table_data[idx].get('CLIENT_NAME')
+                policy_no = table_data[idx].get('PolicyNo')
+                if client_name and policy_no:
+                    conn.execute(
+                        text("DELETE FROM demo_Wellness_Plans_and_Benefits WHERE CLIENT_NAME = :client_name AND PolicyNo = :policy_no"),
+                        {"client_name": client_name, "policy_no": policy_no}
+                    )
+            conn.commit()
         invalidate_cache()
         return dbc.Alert("Selected plan(s) deleted successfully!", color="success")
     except Exception as e:

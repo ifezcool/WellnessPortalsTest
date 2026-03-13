@@ -5,7 +5,7 @@ import dash_bootstrap_components as dbc
 import pandas as pd
 import numpy as np
 import datetime as dt
-import pyodbc
+from sqlalchemy import create_engine, text
 import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
@@ -15,6 +15,26 @@ import base64
 import urllib.parse
 
 load_dotenv('secrets.env')
+
+server = os.environ.get('server_name')
+database = os.environ.get('db_name')
+username = os.environ.get('db_username')
+password = os.environ.get('db_password')
+
+def get_engine():
+    params = urllib.parse.quote_plus(
+        f"DRIVER={{ODBC Driver 17 for SQL Server}};"
+        f"SERVER={server};"
+        f"DATABASE={database};"
+        f"UID={username};"
+        f"PWD={password};"
+        "Encrypt=yes;"
+        "TrustServerCertificate=yes;"
+        "Connection Timeout=30;"
+    )
+    return create_engine(f"mssql+pyodbc:///?odbc_connect={params}")
+
+engine = get_engine()
 
 app = dash.Dash(
     __name__,
@@ -254,23 +274,7 @@ app.index_string = f'''
 </html>
 '''
 
-server = os.environ.get('server_name')
-database = os.environ.get('db_name')
-username = os.environ.get('db_username')
-password = os.environ.get('db_password')
-
 sterling_bank_enrollees = ['100552', '101401', '45492', '45509', '45537', '45704', '45711', '45712', '45747', '45748', '67106', '67113', '67132', '67133', '80701', '105096', '45532']
-
-conn = pyodbc.connect(
-    'DRIVER={ODBC Driver 17 for SQL Server};SERVER='
-    + server
-    +';DATABASE='
-    + database
-    +';UID='
-    + username
-    +';PWD='
-    + password
-)
 
 wellness_df = None
 wellness_providers = None
@@ -284,10 +288,11 @@ def load_all_data():
     query3 = "select a.CODE, a.STATE, PROVIDER_NAME, a.ADDRESS,Provider_Name + ' - ' + Location as ProviderLoc, PROVIDER, name from Updated_Wellness_Providers a join tbl_Providerlist_stg b on a.CODE = b.code"
     query4 = 'select * from vw_loyaltybeneficiaries'
     
-    wellness_df = pd.read_sql(query1, conn)
-    wellness_providers = pd.read_sql(query3, conn)
-    loyalty_enrollees = pd.read_sql(query4, conn)
-    filled_wellness_df = pd.read_sql(query2, conn)
+    with engine.connect() as conn:
+        wellness_df = pd.read_sql(query1, conn)
+        wellness_providers = pd.read_sql(query3, conn)
+        loyalty_enrollees = pd.read_sql(query4, conn)
+        filled_wellness_df = pd.read_sql(query2, conn)
     
     wellness_df['memberno'] = wellness_df['memberno'].astype(int).astype(str)
     filled_wellness_df['MemberNo'] = filled_wellness_df['MemberNo'].astype(str)
@@ -322,7 +327,7 @@ app.layout = html.Div([
         fullscreen=True,
         color="#6B46C1",
         children=html.Div([
-            dcc.Location(id='url', refresh=True),
+            dcc.Location(id='url', refresh=False),
             dcc.Store(id='user-data-store', data=initial_user_data),
             dcc.Store(id='enrollee-data-store', data={}),
             dcc.Store(id='submission-trigger', data=0),
@@ -330,7 +335,7 @@ app.layout = html.Div([
             dcc.Store(id='session-store', data=''),
             
             html.Div([
-                dcc.Location(id="url-welcome", refresh=True),
+                dcc.Location(id="url-welcome", refresh=False),
                 
                 html.Div(className="purple-skew"),
                 html.Div(className="green-blob"),
@@ -1168,8 +1173,6 @@ def submit_form(submit_clicks, close_clicks, enrollee_id, email, mobile, gender,
     six_week_dt = dt.date.today() + dt.timedelta(weeks=6)
     six_weeks = six_week_dt.strftime('%A, %d %B %Y')
     
-    cursor = conn.cursor()
-    
     try:
         insert_query = """
         INSERT INTO [dbo].[demo_tbl_annual_wellness_enrollee_data] (MemberNo, MemberName, client, policy,policystartdate, policyenddate, email, mobile_num, job_type, age, state, selected_provider,
@@ -1192,7 +1195,8 @@ def submit_form(submit_clicks, close_clicks, enrollee_id, email, mobile, gender,
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
         """
         
-        cursor.execute(insert_query, (
+        with engine.begin() as conn:
+            conn.execute(text(insert_query), (
             enrollee_id, enrollee_data['member_name'], client, policy,
             enrollee_data['policystart'], enrollee_data['policyend'], email, mobile, job_type,
             age, state, provider, member_gender, benefits, selected_date_str, session,
@@ -1221,8 +1225,6 @@ def submit_form(submit_clicks, close_clicks, enrollee_id, email, mobile, gender,
             questionnaire_responses.get('resp_4_s', 'Never'), questionnaire_responses.get('resp_4_t', 'Never'),
             dt.datetime.now()
         ))
-        
-        conn.commit()
         
         email_sent, email_error = send_confirmation_email(enrollee_id, enrollee_data['member_name'], email, provider, benefits, selected_date_str, session, enrollee_data['client'], date_communicated)
         
