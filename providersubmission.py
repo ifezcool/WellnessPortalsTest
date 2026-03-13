@@ -401,12 +401,6 @@ services_layout = dbc.Container([
                 className="mt-3", style={"color": "purple"}),
         html.P(id="services-welcome", className="text-muted"),
     ])]),
-    dbc.Row([dbc.Col([
-        dbc.ButtonGroup([
-            dbc.Button("Wellness Providers", id="services-view-providers-btn", color="primary", outline=True),
-            dbc.Button("Wellness Plans & Benefits", id="services-view-plans-btn", color="primary", outline=True),
-        ], className="mb-3")
-    ])]),
     dbc.Row([
         dbc.Col([html.Div(id="services-sidebar")], width=3),
         dbc.Col([
@@ -510,24 +504,27 @@ def load_portal_data(auth_data):
 
 # --- Step 4: data-ready-store=True → swap loading screen for real portal ---
 @app.callback(
-    Output("main-content",    "children", allow_duplicate=True),
-    Input("data-ready-store", "data"),
-    State("auth-store",       "data"),
+    Output("main-content",       "children", allow_duplicate=True),
+    Output("services-view-store", "data",    allow_duplicate=True),
+    Input("data-ready-store",    "data"),
+    State("auth-store",          "data"),
     prevent_initial_call=True,
 )
 def show_portal(ready, auth_data):
     if not ready or not auth_data or not auth_data.get("authenticated"):
-        return dash.no_update
+        return dash.no_update, dash.no_update
     u = auth_data.get("username", "")
     if u.startswith("234"):
-        return provider_layout
+        return provider_layout, dash.no_update
     elif u.startswith("claim"):
-        return claims_layout
+        return claims_layout, dash.no_update
     elif u.startswith("contact"):
-        return contact_layout
-    elif u in ["ClientServices", "MedicalServices"]:
-        return services_layout
-    return login_layout
+        return contact_layout, dash.no_update
+    elif u == "ClientServices":
+        return services_layout, "plans"
+    elif u == "MedicalServices":
+        return services_layout, "providers"
+    return login_layout, dash.no_update
 
 
 # --- Logout ---
@@ -1066,25 +1063,59 @@ def update_pa_code(n_clicks, enrollee_id, policy_year, pacode, pa_tests, pa_prov
     Output("services-view-store", "data"),
     Input("services-view-providers-btn", "n_clicks"),
     Input("services-view-plans-btn",    "n_clicks"),
-    prevent_initial_call=False,
+    prevent_initial_call=True,
 )
 def services_navigation(providers_clicks, plans_clicks):
     ctx = dash.callback_context
     if not ctx.triggered:
-        return "providers"
+        return dash.no_update
     button_id = ctx.triggered[0]['prop_id'].split('.')[0]
     if button_id == "services-view-plans-btn":
         return "plans"
     return "providers"
 
 
-# --- Services portal - Sidebar based on view ---
+# --- Services portal - Sidebar based on view and user type ---
 @app.callback(
     Output("services-sidebar",   "children"),
     Input("services-view-store",  "data"),
+    State("auth-store",           "data"),
     prevent_initial_call=True,
 )
-def render_services_sidebar(view):
+def render_services_sidebar(view, auth_data):
+    username = auth_data.get("username", "") if auth_data else ""
+    
+    if username == "MedicalServices":
+        return _nav_card([
+            html.P("View, edit and manage wellness provider records:",
+                   style={"color": "purple"}),
+            dbc.Button("View All Providers", id="services-view-btn", color="primary", className="mb-2"),
+            html.Hr(),
+            html.H5("Add New Provider", style={"color": "purple"}),
+            dbc.Label("Code"),
+            dbc.Input(id="services-code", type="text", placeholder="Enter Code"),
+            html.Br(),
+            dbc.Label("State"),
+            dbc.Input(id="services-state", type="text", placeholder="Enter State"),
+            html.Br(),
+            dbc.Label("Provider Name"),
+            dbc.Input(id="services-provider-name", type="text", placeholder="Enter Provider Name"),
+            html.Br(),
+            dbc.Label("Address"),
+            dbc.Input(id="services-address", type="text", placeholder="Enter Address"),
+            html.Br(),
+            dbc.Label("Provider"),
+            dbc.Input(id="services-provider", type="text", placeholder="Enter Provider"),
+            html.Br(),
+            dbc.Label("Location"),
+            dbc.Input(id="services-location", type="text", placeholder="Enter Location"),
+            html.Br(),
+            dbc.Button("Add Provider", id="services-add-btn", color="success"),
+            html.Div(id="services-add-message"),
+            html.Hr(),
+            dbc.Button("Logout", id="logout-btn", color="danger", size="sm")
+        ])
+    
     if view == "plans":
         return _nav_card([
             html.P("Add New Wellness Plan:", style={"color": "purple"}),
@@ -1157,8 +1188,16 @@ def _nav_card(body_children):
 def view_providers(view, ready, q3_data, q5_data, auth_data):
     if not auth_data or not auth_data.get("authenticated"):
         return ""
-    if not auth_data.get("username", "") in ["ClientServices", "MedicalServices"]:
+    
+    username = auth_data.get("username", "")
+    
+    if username == "MedicalServices":
+        view = "providers"
+    elif username == "ClientServices":
+        view = "plans"
+    else:
         return ""
+    
     if not ready:
         return ""
     if not view:
@@ -1231,7 +1270,8 @@ def view_providers(view, ready, q3_data, q5_data, auth_data):
 def add_provider(n_clicks, code, state, provider_name, address, provider, location, auth_data):
     if not auth_data or not auth_data.get("authenticated"):
         return ""
-    if not auth_data.get("username", "") in ["ClientServices", "MedicalServices"]:
+    username = auth_data.get("username", "")
+    if username != "MedicalServices":
         return ""
     if not n_clicks:
         return ""
@@ -1274,7 +1314,8 @@ def add_provider(n_clicks, code, state, provider_name, address, provider, locati
 def save_providers(n_clicks, table_data, auth_data):
     if not auth_data or not auth_data.get("authenticated"):
         return ""
-    if not auth_data.get("username", "") in ["ClientServices", "MedicalServices"]:
+    username = auth_data.get("username", "")
+    if username != "MedicalServices":
         return ""
     if not n_clicks or not table_data:
         return ""
@@ -1318,7 +1359,8 @@ def save_providers(n_clicks, table_data, auth_data):
 def delete_providers(n_clicks, selected_rows, table_data, auth_data):
     if not auth_data or not auth_data.get("authenticated"):
         return ""
-    if not auth_data.get("username", "") in ["ClientServices", "MedicalServices"]:
+    username = auth_data.get("username", "")
+    if username != "MedicalServices":
         return ""
     if not n_clicks or not selected_rows or not table_data:
         return ""
@@ -1354,7 +1396,8 @@ def delete_providers(n_clicks, selected_rows, table_data, auth_data):
 def add_plan(n_clicks, client_name, policy_no, client_plan, customization, wellness_benefits, auth_data):
     if not auth_data or not auth_data.get("authenticated"):
         return ""
-    if not auth_data.get("username", "") in ["ClientServices", "MedicalServices"]:
+    username = auth_data.get("username", "")
+    if username != "ClientServices":
         return ""
     if not n_clicks:
         return ""
@@ -1396,7 +1439,8 @@ def add_plan(n_clicks, client_name, policy_no, client_plan, customization, welln
 def save_plans(n_clicks, table_data, auth_data):
     if not auth_data or not auth_data.get("authenticated"):
         return ""
-    if not auth_data.get("username", "") in ["ClientServices", "MedicalServices"]:
+    username = auth_data.get("username", "")
+    if username != "ClientServices":
         return ""
     if not n_clicks or not table_data:
         return ""
@@ -1441,7 +1485,8 @@ def save_plans(n_clicks, table_data, auth_data):
 def delete_plans(n_clicks, selected_rows, table_data, auth_data):
     if not auth_data or not auth_data.get("authenticated"):
         return ""
-    if not auth_data.get("username", "") in ["ClientServices", "MedicalServices"]:
+    username = auth_data.get("username", "")
+    if username != "ClientServices":
         return ""
     if not n_clicks or not selected_rows or not table_data:
         return ""
