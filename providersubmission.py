@@ -1147,7 +1147,6 @@ def _nav_card(body_children):
 # --- Services portal (ClientServices/MedicalServices) - View Providers ---
 @app.callback(
     Output("services-content",    "children"),
-    Input("services-view-btn",   "n_clicks"),
     Input("services-view-store", "data"),
     Input("data-ready-store",    "data"),
     State("store-q3",            "data"),
@@ -1155,7 +1154,7 @@ def _nav_card(body_children):
     State("auth-store",          "data"),
     prevent_initial_call=True,
 )
-def view_providers(n_clicks, view, ready, q3_data, q5_data, auth_data):
+def view_providers(view, ready, q3_data, q5_data, auth_data):
     if not auth_data or not auth_data.get("authenticated"):
         return ""
     if not auth_data.get("username", "") in ["ClientServices", "MedicalServices"]:
