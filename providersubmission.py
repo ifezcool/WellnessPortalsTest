@@ -2,6 +2,7 @@ import dash
 from dash import dcc, html, Input, Output, State, callback_context
 import dash_bootstrap_components as dbc
 from dash import dash_table
+from styles import PURPLE_TABLE_STYLE
 import pandas as pd
 import datetime as dt
 from sqlalchemy import create_engine, text
@@ -604,7 +605,9 @@ def update_provider_content(option, q2_data, q4_data, auth_data):
             dash_table.DataTable(
                 data=pdf.to_dict('records'),
                 columns=[{"name": i, "id": i} for i in pdf.columns],
-                style_data_conditional=[
+                style_header=PURPLE_TABLE_STYLE["style_header"],
+                style_cell=PURPLE_TABLE_STYLE["style_cell"],
+                style_data_conditional=PURPLE_TABLE_STYLE["style_data_conditional"] + [
                     {"if": {"filter_query": '{SubmissionStatus} = "Submitted"',     "column_id": "SubmissionStatus"}, "backgroundColor": "green", "color": "white"},
                     {"if": {"filter_query": '{SubmissionStatus} = "Not Submitted"', "column_id": "SubmissionStatus"}, "backgroundColor": "red",   "color": "white"},
                 ],
@@ -1171,6 +1174,9 @@ def view_providers(n_clicks, view, ready, q3_data, q5_data, auth_data):
             dash_table.DataTable(
                 data=df.to_dict('records'),
                 columns=[{"name": i, "id": i, "editable": True} for i in df.columns],
+                style_header=PURPLE_TABLE_STYLE["style_header"],
+                style_cell=PURPLE_TABLE_STYLE["style_cell"],
+                style_data_conditional=PURPLE_TABLE_STYLE["style_data_conditional"],
                 style_table={"overflowX": "auto"},
                 page_size=20,
                 id="services-plans-table",
@@ -1193,6 +1199,9 @@ def view_providers(n_clicks, view, ready, q3_data, q5_data, auth_data):
                 data=df.to_dict('records'),
                 columns=[{"name": i, "id": i, "editable": True if i in ['CODE', 'STATE', 'PROVIDER_NAME', 'ADDRESS', 'PROVIDER', 'Location'] else False} 
                          for i in df.columns],
+                style_header=PURPLE_TABLE_STYLE["style_header"],
+                style_cell=PURPLE_TABLE_STYLE["style_cell"],
+                style_data_conditional=PURPLE_TABLE_STYLE["style_data_conditional"],
                 style_table={"overflowX": "auto"},
                 page_size=20,
                 id="services-providers-table",
