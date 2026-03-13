@@ -26,3 +26,4 @@ toolz==0.12.0
 virtualenv==20.19.0
 gunicorn
 azure-storage-blob
+sqlalchemy==2.0.48
