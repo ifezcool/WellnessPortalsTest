@@ -834,25 +834,25 @@ def search_enrollee(n_clicks, data_ready, auth_data, enrollee_id, q2_data, q3_da
                     dbc.Card([
                         dbc.CardBody([
                             html.H5(f"{total_records}", className="card-title text-center", style={"fontSize": "36px", "color": "#59058d"}),
-                            html.P("Total Enrollee Records", className="card-text text-center", style={"color": "gray"})
+                            html.P("Total Enrollee Records", className="card-text text-center", style={"color": "#59058d"})
                         ])
                     ], style={"boxShadow": "0 4px 8px rgba(0,0,0,0.1)", "borderTop": "4px solid #59058d"})
                 ], width=4),
                 dbc.Col([
                     dbc.Card([
                         dbc.CardBody([
-                            html.H5(f"{records_with_pa}", className="card-title text-center", style={"fontSize": "36px", "color": "green"}),
-                            html.P("Records with PA Code", className="card-text text-center", style={"color": "gray"})
+                            html.H5(f"{records_with_pa}", className="card-title text-center", style={"fontSize": "36px", "color": "#59058d"}),
+                            html.P("Records with PA Code", className="card-text text-center", style={"color": "#59058d"})
                         ])
-                    ], style={"boxShadow": "0 4px 8px rgba(0,0,0,0.1)", "borderTop": "4px solid green"})
+                    ], style={"boxShadow": "0 4px 8px rgba(0,0,0,0.1)", "borderTop": "4px solid #59058d"})
                 ], width=4),
                 dbc.Col([
                     dbc.Card([
                         dbc.CardBody([
-                            html.H5(f"{records_without_pa}", className="card-title text-center", style={"fontSize": "36px", "color": "red"}),
-                            html.P("Records without PA Code", className="card-text text-center", style={"color": "gray"})
+                            html.H5(f"{records_without_pa}", className="card-title text-center", style={"fontSize": "36px", "color": "#59058d"}),
+                            html.P("Records without PA Code", className="card-text text-center", style={"color": "#59058d"})
                         ])
-                    ], style={"boxShadow": "0 4px 8px rgba(0,0,0,0.1)", "borderTop": "4px solid red"})
+                    ], style={"boxShadow": "0 4px 8px rgba(0,0,0,0.1)", "borderTop": "4px solid #59058d"})
                 ], width=4),
             ])
         ])
