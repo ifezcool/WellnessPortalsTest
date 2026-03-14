@@ -318,7 +318,7 @@ login_layout = dbc.Container([
                     dbc.Label("Password"),
                     dbc.Input(id="login-password", type="password", placeholder="Enter password"),
                     html.Br(),
-                    dbc.Button("Login", id="login-button", color="primary", className="w-100"),
+                    dbc.Button("Login", id="login-button", color="primary", className="w-100", style={"backgroundColor": "#59058d", "borderColor": "#59058d"}),
                     html.Br(),
                     html.Div(id="login-error", className="text-danger text-center")
                 ])
@@ -427,6 +427,10 @@ app.layout = html.Div([
     dcc.Store(id="store-q5", data=None),
     # Services portal view state
     dcc.Store(id="services-view-store", data="providers"),
+    dcc.Store(id="services-state-filter", data=None),
+    dcc.Store(id="services-provider-name-filter", data=None),
+    dcc.Store(id="services-plan-type-filter", data=None),
+    dcc.Store(id="services-client-name-filter", data=None),
     html.Div(id="main-content")
 ])
 
@@ -603,7 +607,7 @@ def update_provider_content(option, q2_data, q4_data, auth_data):
                 data=pdf.to_dict('records'),
                 columns=[{"name": i, "id": i} for i in pdf.columns],
                 style_header=PURPLE_TABLE_STYLE["style_header"],
-                style_cell=PURPLE_TABLE_STYLE["style_cell"],
+                style_cell={**PURPLE_TABLE_STYLE["style_cell"], "fontFamily": "Arial"},
                 style_data_conditional=PURPLE_TABLE_STYLE["style_data_conditional"] + [
                     {"if": {"filter_query": '{SubmissionStatus} = "Submitted"',     "column_id": "SubmissionStatus"}, "backgroundColor": "green", "color": "white"},
                     {"if": {"filter_query": '{SubmissionStatus} = "Not Submitted"', "column_id": "SubmissionStatus"}, "backgroundColor": "red",   "color": "white"},
@@ -801,27 +805,61 @@ def show_claims_content(member, provider, q2_data):
 @app.callback(
     Output("contact-content",       "children"),
     Input("contact-search-button",  "n_clicks"),
+    Input("data-ready-store",       "data"),
+    Input("auth-store",             "data"),
     State("contact-enrollee-id",    "value"),
-    #State("store-q1",   "data"),
     State("store-q2",   "data"),
     State("store-q3",   "data"),
     State("store-q4",   "data"),
-    State("auth-store", "data"),
-    prevent_initial_call=True,
+    prevent_initial_call=False,
 )
-def search_enrollee(n_clicks, enrollee_id, q2_data, q3_data, q4_data, auth_data):
+def search_enrollee(n_clicks, data_ready, auth_data, enrollee_id, q2_data, q3_data, q4_data):
     if not auth_data or not auth_data.get("authenticated"):
         return ""
     if not auth_data.get("username","").startswith("contact"):
         return ""
-    if not n_clicks or not enrollee_id:
+    if not data_ready or not q2_data:
         return ""
-    if not q2_data:
-        return dbc.Alert("Portal data is still loading. Please wait a moment and try again.", color="warning")
+    
+    filled_df = pd.DataFrame(q2_data)
+    total_records = len(filled_df)
+    records_with_pa = filled_df['IssuedPACode'].notna().sum()
+    records_without_pa = filled_df['IssuedPACode'].isna().sum()
+    
+    if not n_clicks or not enrollee_id:
+        return html.Div([
+            html.H4("Wellness Enrollee Overview", style={"color": "#59058d", "marginBottom": "20px"}),
+            dbc.Row([
+                dbc.Col([
+                    dbc.Card([
+                        dbc.CardBody([
+                            html.H5(f"{total_records}", className="card-title text-center", style={"fontSize": "36px", "color": "#59058d"}),
+                            html.P("Total Enrollee Records", className="card-text text-center", style={"color": "gray"})
+                        ])
+                    ], style={"boxShadow": "0 4px 8px rgba(0,0,0,0.1)", "borderTop": "4px solid #59058d"})
+                ], width=4),
+                dbc.Col([
+                    dbc.Card([
+                        dbc.CardBody([
+                            html.H5(f"{records_with_pa}", className="card-title text-center", style={"fontSize": "36px", "color": "green"}),
+                            html.P("Records with PA Code", className="card-text text-center", style={"color": "gray"})
+                        ])
+                    ], style={"boxShadow": "0 4px 8px rgba(0,0,0,0.1)", "borderTop": "4px solid green"})
+                ], width=4),
+                dbc.Col([
+                    dbc.Card([
+                        dbc.CardBody([
+                            html.H5(f"{records_without_pa}", className="card-title text-center", style={"fontSize": "36px", "color": "red"}),
+                            html.P("Records without PA Code", className="card-text text-center", style={"color": "gray"})
+                        ])
+                    ], style={"boxShadow": "0 4px 8px rgba(0,0,0,0.1)", "borderTop": "4px solid red"})
+                ], width=4),
+            ])
+        ])
 
     enrollee_id = enrollee_id.strip()
 
-    filled_df = pd.DataFrame(q2_data)
+    # filled_df already created above
     filled_df['ProviderName'] = filled_df['PA_Provider'].str.split('-').str[0].str.strip()
     filled_df['MemberNo']     = filled_df['MemberNo'].astype(str)
 
@@ -1175,17 +1213,78 @@ def _nav_card(body_children):
     return dbc.Card([dbc.CardHeader("Navigation"), dbc.CardBody(body_children)], className="mb-3")
 
 
+# --- Services portal - Populate State Filter Dropdown ---
+@app.callback(
+    Output("services-state-dropdown", "options"),
+    Input("data-ready-store", "data"),
+    State("store-q3", "data"),
+    prevent_initial_call=True,
+)
+def populate_state_filter(ready, q3_data):
+    if not ready or not q3_data:
+        return []
+    df = pd.DataFrame(q3_data)
+    if 'STATE' not in df.columns:
+        return []
+    states = sorted(df['STATE'].dropna().unique())
+    return [{"label": s, "value": s} for s in states]
+
+
+# --- Services portal - Update State Filter Store ---
+@app.callback(
+    Output("services-state-filter", "data"),
+    Input("services-state-dropdown", "value"),
+    prevent_initial_call=True,
+)
+def update_state_filter(selected_state):
+    return selected_state
+
+
+# --- Services portal - Update Provider Name Filter Store ---
+@app.callback(
+    Output("services-provider-name-filter", "data"),
+    Input("services-provider-name-input", "value"),
+    prevent_initial_call=True,
+)
+def update_provider_name_filter(provider_name):
+    return provider_name if provider_name else None
+
+
+# --- Services portal - Update Plan Type Filter Store ---
+@app.callback(
+    Output("services-plan-type-filter", "data"),
+    Input("services-plan-type-dropdown", "value"),
+    prevent_initial_call=True,
+)
+def update_plan_type_filter(plan_type):
+    return plan_type
+
+
+# --- Services portal - Update Client Name Filter Store ---
+@app.callback(
+    Output("services-client-name-filter", "data"),
+    Input("services-client-name-input", "value"),
+    prevent_initial_call=True,
+)
+def update_client_name_filter(client_name):
+    return client_name if client_name else None
+
+
 # --- Services portal (ClientServices/MedicalServices) - View Providers ---
 @app.callback(
     Output("services-content",    "children"),
     Input("services-view-store", "data"),
     Input("data-ready-store",    "data"),
+    Input("services-state-filter", "data"),
+    Input("services-provider-name-filter", "data"),
+    Input("services-plan-type-filter", "data"),
+    Input("services-client-name-filter", "data"),
     State("store-q3",            "data"),
     State("store-q5",            "data"),
     State("auth-store",          "data"),
     prevent_initial_call=True,
 )
-def view_providers(view, ready, q3_data, q5_data, auth_data):
+def view_providers(view, ready, state_filter, provider_name_filter, plan_type_filter, client_name_filter, q3_data, q5_data, auth_data):
     if not auth_data or not auth_data.get("authenticated"):
         return ""
     
@@ -1207,8 +1306,37 @@ def view_providers(view, ready, q3_data, q5_data, auth_data):
         if not q5_data:
             return dbc.Alert("No plan data available.", color="warning")
         df = pd.DataFrame(q5_data)
+        if plan_type_filter:
+            df = df[df['CLIENT_PLAN'] == plan_type_filter]
+        if client_name_filter:
+            df = df[df['CLIENT_NAME'].str.contains(client_name_filter, case=False, na=False)]
         return html.Div([
             html.H4("Wellness Plans & Benefits", style={"color": "purple"}),
+            html.P(f"Showing {len(df)} plan(s)", style={"color": "gray"}),
+            html.Div([
+                html.Div([
+                    html.Label("Plan Type", style={"fontWeight": "bold", "display": "block"}),
+                    dcc.Dropdown(
+                        id="services-plan-type-dropdown",
+                        options=[{"label": p, "value": p} for p in sorted(pd.DataFrame(q5_data)['CLIENT_PLAN'].dropna().unique())] if q5_data else [],
+                        value=plan_type_filter,
+                        placeholder="Select Plan Type",
+                        clearable=True,
+                        style={"width": "200px"}
+                    ),
+                ], style={"display": "inline-block", "marginRight": "20px", "verticalAlign": "top"}),
+                html.Div([
+                    html.Label("Client Name", style={"fontWeight": "bold", "display": "block"}),
+                    dcc.Input(
+                        id="services-client-name-input",
+                        type="text",
+                        placeholder="Search Client Name...",
+                        value=client_name_filter or "",
+                        debounce=True,
+                        style={"width": "200px"}
+                    ),
+                ], style={"display": "inline-block", "verticalAlign": "top"}),
+            ], style={"marginBottom": "20px"}),
             dash_table.DataTable(
                 data=df.to_dict('records'),
                 columns=[{"name": i, "id": i, "editable": True} for i in df.columns],
@@ -1231,8 +1359,37 @@ def view_providers(view, ready, q3_data, q5_data, auth_data):
         if not q3_data:
             return dbc.Alert("No provider data available.", color="warning")
         df = pd.DataFrame(q3_data)
+        if state_filter:
+            df = df[df['STATE'] == state_filter]
+        if provider_name_filter:
+            df = df[df['PROVIDER_NAME'].str.contains(provider_name_filter, case=False, na=False)]
         return html.Div([
             html.H4("Wellness Providers", style={"color": "purple"}),
+            html.P(f"Showing {len(df)} provider(s)" + (f" in {state_filter}" if state_filter else ""), style={"color": "gray"}),
+            html.Div([
+                html.Div([
+                    html.Label("State", style={"fontWeight": "bold", "display": "block"}),
+                    dcc.Dropdown(
+                        id="services-state-dropdown",
+                        options=[{"label": s, "value": s} for s in sorted(pd.DataFrame(q3_data)['STATE'].dropna().unique())] if q3_data else [],
+                        value=state_filter,
+                        placeholder="Select State",
+                        clearable=True,
+                        style={"width": "200px"}
+                    ),
+                ], style={"display": "inline-block", "marginRight": "20px", "verticalAlign": "top"}),
+                html.Div([
+                    html.Label("Provider Name", style={"fontWeight": "bold", "display": "block"}),
+                    dcc.Input(
+                        id="services-provider-name-input",
+                        type="text",
+                        placeholder="Search Provider Name...",
+                        value=provider_name_filter or "",
+                        debounce=True,
+                        style={"width": "200px"}
+                    ),
+                ], style={"display": "inline-block", "verticalAlign": "top"}),
+            ], style={"marginBottom": "20px"}),
             dash_table.DataTable(
                 data=df.to_dict('records'),
                 columns=[{"name": i, "id": i, "editable": True if i in ['CODE', 'STATE', 'PROVIDER_NAME', 'ADDRESS', 'PROVIDER', 'Location'] else False} 

@@ -2,7 +2,7 @@
 
 PURPLE_TABLE_STYLE = {
     "style_header": {
-        "backgroundColor": "#534AB7",
+        "backgroundColor": "#59058d",
         "color": "#EEEDFE",
         "fontWeight": "500",
         "fontSize": "13px",
