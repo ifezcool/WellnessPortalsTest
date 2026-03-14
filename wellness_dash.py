@@ -10,9 +10,11 @@ import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 import os
-from dotenv import load_dotenv
+import time
 import base64
+import threading
 import urllib.parse
+from dotenv import load_dotenv
 
 load_dotenv('secrets.env')
 
@@ -35,6 +37,27 @@ def get_engine():
     return create_engine(f"mssql+pyodbc:///?odbc_connect={params}")
 
 engine = get_engine()
+
+_cache = {}
+_cache_lock = threading.Lock()
+_CACHE_TTL = 300
+
+def cached_read_sql(query, ttl=_CACHE_TTL):
+    now = time.time()
+    with _cache_lock:
+        if query in _cache:
+            df, ts = _cache[query]
+            if now - ts < ttl:
+                return df.copy()
+    with engine.connect() as conn:
+        df = pd.read_sql(query, conn)
+    with _cache_lock:
+        _cache[query] = (df, now)
+    return df.copy()
+
+def invalidate_cache():
+    with _cache_lock:
+        _cache.clear()
 
 app = dash.Dash(
     __name__,
@@ -282,24 +305,44 @@ loyalty_enrollees = None
 filled_wellness_df = None
 
 def load_all_data():
-    global wellness_df, wellness_providers, loyalty_enrollees, filled_wellness_df
-    query1 = "SELECT * from vw_wellness_enrollee_portal_update"
-    query2 = 'select MemberNo, MemberName, Client, email, state, selected_provider, Wellness_benefits, selected_date, selected_session, date_submitted from demo_tbl_annual_wellness_enrollee_data a where a.PolicyEndDate = (select max(PolicyEndDate) from demo_tbl_annual_wellness_enrollee_data b where a.MemberNo = b.MemberNo)'
+    global wellness_providers, loyalty_enrollees, filled_wellness_df
+    query2 = 'SELECT a.MemberNo,a.MemberName,a.Client,a.email,a.state,a.selected_provider,a.Wellness_benefits,a.selected_date,a.selected_session,a.date_submitted FROM demo_tbl_annual_wellness_enrollee_data a INNER JOIN (SELECT MemberNo, MAX(PolicyEndDate) AS max_end_date FROM demo_tbl_annual_wellness_enrollee_data GROUP BY MemberNo) latest ON  a.MemberNo     = latest.MemberNo AND a.PolicyEndDate = latest.max_end_date;'
     query3 = "select a.CODE, a.STATE, PROVIDER_NAME, a.ADDRESS,Provider_Name + ' - ' + Location as ProviderLoc, PROVIDER, name from Updated_Wellness_Providers a join tbl_Providerlist_stg b on a.CODE = b.code"
     query4 = 'select * from vw_loyaltybeneficiaries'
     
-    with engine.connect() as conn:
-        wellness_df = pd.read_sql(query1, conn)
-        wellness_providers = pd.read_sql(query3, conn)
-        loyalty_enrollees = pd.read_sql(query4, conn)
-        filled_wellness_df = pd.read_sql(query2, conn)
+    print("[LOADING] Loading wellness providers data...")
+    wellness_providers = cached_read_sql(query3)
+    print("[COMPLETE] Wellness providers data loaded!")
     
-    wellness_df['memberno'] = wellness_df['memberno'].astype(int).astype(str)
+    print("[LOADING] Loading loyalty enrollees data...")
+    loyalty_enrollees = cached_read_sql(query4)
+    print("[COMPLETE] Loyalty enrollees data loaded!")
+    
+    print("[LOADING] Loading filled wellness data...")
+    filled_wellness_df = cached_read_sql(query2)
+    print("[COMPLETE] Filled wellness data loaded!")
+    
     filled_wellness_df['MemberNo'] = filled_wellness_df['MemberNo'].astype(str)
     loyalty_enrollees['MemberNo'] = loyalty_enrollees['MemberNo'].astype(str)
-    print("Data loaded successfully!")
+    print("[ALL COMPLETE] All startup data loaded successfully!")
 
-load_all_data()
+
+def load_wellness_df():
+    global wellness_df
+    query1 = "SELECT * from vw_new_wellness_enrollee_portal_update"
+    print("[LOADING] Loading wellness_df (vw_new_wellness_enrollee_portal_update)...")
+    wellness_df = cached_read_sql(query1)
+    wellness_df['memberno'] = wellness_df['memberno'].astype(int).astype(str)
+    print("[COMPLETE] wellness_df loaded!")
+
+def _prewarm():
+    try:
+        load_all_data()
+        print("[cache] Pre-warm complete.")
+    except Exception as e:
+        print(f"[cache] Pre-warm warning: {e}")
+
+threading.Thread(target=_prewarm, daemon=True).start()
 
 ladol_special = pd.read_csv('Ladol Special Wellness.csv')
 
@@ -320,11 +363,51 @@ for i in list('abcdef'):
 for i in list('abcdefghijklmnopqrst'):
     initial_user_data[f'resp_4_{i}'] = 'Never'
 
+data_loaded = False
+
+def loading_screen():
+    return html.Div([
+        html.Div(className="purple-skew"),
+        html.Div(className="green-blob"),
+        html.Div([
+            html.Div(className="logo-container mb-4", children=[
+                Svg(
+                    width="64", height="64", viewBox="0 0 24 24",
+                    fill="none", stroke="white",
+                    style={"strokeWidth": "2", "strokeLinecap": "round", "strokeLinejoin": "round"},
+                    children=[
+                        Path(d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z"),
+                        Path(d="m9 12 2 2 4-4")
+                    ]
+                )
+            ]),
+            html.H3("Loading portal data...", className="mb-3", style={"color": "#44337A"}),
+            dbc.Spinner(size="lg", color="primary"),
+            html.P("Please wait while we load the wellness portal", className="mt-3", style={"color": "#718096"})
+        ], className="text-center")
+    ], className="gradient-bg min-vh-100 d-flex align-items-center justify-content-center p-4 position-relative overflow-hidden")
+
 app.layout = html.Div([
-    dcc.Loading(
+    dcc.Store(id='data-ready-store', data=False),
+    dcc.Interval(id='data-check-interval', interval=500, n_intervals=0),
+    html.Div(id='main-content')
+])
+
+
+@app.callback(
+    [Output('main-content', 'children'),
+     Output('data-check-interval', 'disabled')],
+    Input('data-ready-store', 'data'),
+    prevent_initial_call=False
+)
+def render_content(data_ready):
+    if not data_ready:
+        return loading_screen(), False
+    
+    return dcc.Loading(
         id="loading",
         type="circle",
-        fullscreen=True,
+        fullscreen=False,
         color="#6B46C1",
         children=html.Div([
             dcc.Location(id='url', refresh=False),
@@ -409,8 +492,18 @@ app.layout = html.Div([
                 dbc.ModalFooter(dbc.Button("Close", id="close-modal", className="btn-primary-custom", style={"color": "white"}))
             ], id="success-modal", is_open=False, size="lg", centered=True),
         ])
-    ),
-])
+    ), True
+
+
+@app.callback(
+    Output('data-ready-store', 'data'),
+    Input('data-check-interval', 'n_intervals'),
+    prevent_initial_call=False
+)
+def check_data_loaded(n):
+    if filled_wellness_df is not None and loyalty_enrollees is not None and wellness_providers is not None:
+        return True
+    return False
 
 
 @app.callback(
@@ -426,6 +519,10 @@ app.layout = html.Div([
      State('enrollee-data-store', 'data')]
 )
 def check_eligibility(url_search, n_clicks, n_submit, enrollee_id, stored_data):
+    global wellness_df
+    if wellness_df is None:
+        load_wellness_df()
+    
     ctx = callback_context
     triggered_id = ctx.triggered[0]['prop_id'].split('.')[0] if ctx.triggered else None
     
@@ -904,6 +1001,10 @@ def update_providers(state, enrollee_id):
     if not enrollee_id or not state:
         return []
     
+    global wellness_df
+    if wellness_df is None:
+        load_wellness_df()
+    
     enrollee_id = str(enrollee_id).strip()
     if enrollee_id not in wellness_df['memberno'].values:
         return []
@@ -1019,6 +1120,10 @@ def update_sessions(state, provider, selected_date, session_radio_value, enrolle
     if not enrollee_id:
         return html.Div(), {'display': 'none'}, ''
     
+    global wellness_df
+    if wellness_df is None:
+        load_wellness_df()
+    
     enrollee_id = str(enrollee_id).strip()
     if enrollee_id not in wellness_df['memberno'].values:
         return html.Div(), {'display': 'none'}, ''
@@ -1039,7 +1144,8 @@ def update_sessions(state, provider, selected_date, session_radio_value, enrolle
             # Reload filled data
             global filled_wellness_df
             query2 = 'select MemberNo, MemberName, Client, email, state, selected_provider, Wellness_benefits, selected_date, selected_session, date_submitted from demo_tbl_annual_wellness_enrollee_data a where a.PolicyEndDate = (select max(PolicyEndDate) from demo_tbl_annual_wellness_enrollee_data b where a.MemberNo = b.MemberNo)'
-            filled_wellness_df = pd.read_sql(query2, conn)
+            with engine.connect() as conn:
+                filled_wellness_df = pd.read_sql(query2, conn)
             filled_wellness_df['MemberNo'] = filled_wellness_df['MemberNo'].astype(str)
             
             selected_date_str = dt.datetime.strptime(selected_date, '%Y-%m-%d').strftime('%Y-%m-%d')
@@ -1251,8 +1357,6 @@ def submit_form(submit_clicks, close_clicks, enrollee_id, email, mobile, gender,
     except Exception as e:
         success_msg = dbc.Alert(f"An error occurred: {str(e)}", color="danger")
         return True, success_msg
-    finally:
-        cursor.close()
     
     return True, success_msg
 
