@@ -17,6 +17,10 @@ PURPLE_TABLE_STYLE = {
         "borderBottom": "0.5px solid #e0e0e0",
         "color": "#1a1a1a",
         "backgroundColor": "white",
+        "whiteSpace": "normal",
+        "height": "auto",
+        "wordWrap": "break-word",
+        "maxWidth": "300px",
     },
     "style_data_conditional": [
         {
