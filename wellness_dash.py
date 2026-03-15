@@ -38,6 +38,17 @@ def get_engine():
 
 engine = get_engine()
 
+# =============================================================================
+# SQL QUERIES
+# =============================================================================
+query1 = "SELECT * from vw_new_wellness_enrollee_portal_update"
+query2 = 'SELECT a.MemberNo,a.MemberName,a.Client,a.email,a.state,a.selected_provider,a.Wellness_benefits,a.selected_date,a.selected_session,a.date_submitted FROM demo_tbl_annual_wellness_enrollee_data a INNER JOIN (SELECT MemberNo, MAX(PolicyEndDate) AS max_end_date FROM demo_tbl_annual_wellness_enrollee_data GROUP BY MemberNo) latest ON  a.MemberNo     = latest.MemberNo AND a.PolicyEndDate = latest.max_end_date;'
+query3 = "select a.CODE, a.STATE, PROVIDER_NAME, a.ADDRESS,Provider_Name + ' - ' + Location as ProviderLoc, PROVIDER, name from Updated_Wellness_Providers a join tbl_Providerlist_stg b on a.CODE = b.code"
+query4 = 'select * from vw_loyaltybeneficiaries'
+
+# =============================================================================
+# DB + CACHE (thread-safe, 5-min TTL, pre-warms at server startup)
+# =============================================================================
 _cache = {}
 _cache_lock = threading.Lock()
 _CACHE_TTL = 300
@@ -59,6 +70,645 @@ def invalidate_cache():
     with _cache_lock:
         _cache.clear()
 
+def _prewarm():
+    try:
+        load_all_data()
+        print("[cache] Pre-warm complete.")
+    except Exception as e:
+        print(f"[cache] Pre-warm warning: {e}")
+
+# =============================================================================
+# HELPERS
+# =============================================================================
+sterling_bank_enrollees = ['100552', '101401', '45492', '45509', '45537', '45704', '45711', '45712', '45747', '45748', '67106', '67113', '67132', '67133', '80701', '105096', '45532']
+
+wellness_df = None
+wellness_providers = None
+loyalty_enrollees = None
+filled_wellness_df = None
+
+def load_all_data():
+    global wellness_providers, loyalty_enrollees, filled_wellness_df
+    
+    print("[LOADING] Loading wellness providers data...")
+    wellness_providers = cached_read_sql(query3)
+    print("[COMPLETE] Wellness providers data loaded!")
+    
+    print("[LOADING] Loading loyalty enrollees data...")
+    loyalty_enrollees = cached_read_sql(query4)
+    print("[COMPLETE] Loyalty enrollees data loaded!")
+    
+    print("[LOADING] Loading filled wellness data...")
+    filled_wellness_df = cached_read_sql(query2)
+    print("[COMPLETE] Filled wellness data loaded!")
+    
+    filled_wellness_df['MemberNo'] = filled_wellness_df['MemberNo'].astype(str)
+    loyalty_enrollees['MemberNo'] = loyalty_enrollees['MemberNo'].astype(str)
+    print("[ALL COMPLETE] All startup data loaded successfully!")
+
+threading.Thread(target=_prewarm, daemon=True).start()
+
+
+def load_wellness_df():
+    global wellness_df
+    print("[LOADING] Loading wellness_df (vw_new_wellness_enrollee_portal_update)...")
+    wellness_df = cached_read_sql(query1)
+    wellness_df['memberno'] = wellness_df['memberno'].astype(int).astype(str)
+    print("[COMPLETE] wellness_df loaded!")
+
+
+ladol_special = pd.read_csv('Ladol Special Wellness.csv')
+
+image_filename = 'wellness_image_1.png'
+encoded_image = base64.b64encode(open(image_filename, 'rb').read()).decode()
+
+initial_user_data = {
+    'email': '', 'mobile_num': '', 'state': 'ABIA',
+    'selected_provider': 'ROSEVINE HOSPITAL  -  73 ABA OWERRI ROAD, ABA',
+    'job_type': 'Mainly Desk Work', 'gender': 'Male',
+}
+for i in list('abcdefghijk'):
+    initial_user_data[f'resp_1_{i}'] = 'Grand Parent(s)'
+for i in list('abcdefghi'):
+    initial_user_data[f'resp_2_{i}'] = 'Yes'
+for i in list('abcdef'):
+    initial_user_data[f'resp_3_{i}'] = 'Yes'
+for i in list('abcdefghijklmnopqrst'):
+    initial_user_data[f'resp_4_{i}'] = 'Never'
+
+data_loaded = False
+
+
+def get_job_options(client, policy):
+    if policy == 'TOTAL ENERGIES MANAGED CARE PLAN':
+        return [
+            {'label': 'Offshore Personnel', 'value': 'Offshore Personnel'},
+            {'label': 'Fire Team', 'value': 'Fire Team'},
+            {'label': 'MERT', 'value': 'MERT'},
+            {'label': 'Lab Personnel', 'value': 'Lab Personnel'},
+            {'label': 'Admin and Others', 'value': 'Admin and Others'}
+        ]
+    return [
+        {'label': 'Mainly Desk Work', 'value': 'Mainly Desk Work'},
+        {'label': 'Mainly Field Work', 'value': 'Mainly Field Work'},
+        {'label': 'Desk and Field Work', 'value': 'Desk and Field Work'},
+        {'label': 'Physical Outdoor Work', 'value': 'Physical Outdoor Work'},
+        {'label': 'Physical Indoor Work', 'value': 'Physical Indoor Work'}
+    ]
+
+
+def get_state_options(client):
+    excluded_state = 'HQ'
+    available_states = list(wellness_providers['STATE'].unique())
+    available_states = [s for s in available_states if s != excluded_state]
+    
+    state_map = {
+        'UNITED BANK FOR AFRICA': [s for s in available_states if s != 'HQ'],
+        'VERTEVILLE ENERGY': ['LAGOS', 'BORNO', 'DELTA', 'RIVERS'],
+        'PETROSTUFF NIGERIA LIMITED': ['LAGOS', 'ABUJA', 'RIVERS'],
+        'TRANSCORP HILTON HOTEL ABUJA': ['ABUJA'],
+        'REX INSURANCE LTD': ['LAGOS', 'RIVERS', 'DELTA', 'OYO', 'KADUNA', 'KANO']
+    }
+    return [{'label': s, 'value': s} for s in state_map.get(client, [s for s in available_states if s != 'HQ'])]
+
+
+def get_providers_for_client_state(client, state, enrollee_id=None):
+    if client == 'UNITED BANK FOR AFRICA':
+        if state == 'UBA HQ':
+            return ['UBA Head Office (CERBA Onsite) - Marina, Lagos Island']
+        elif state == 'RIVERS':
+            return [
+                'PONYX HOSPITALS LTD - Plot 26,presidential estate, GRA phase iii, opp. NDDC H/Qrts, port- harcourt/ Aba expressway',
+                'UNION DIAGNOSTICS - Finima Street, PortHarcourt, Rivers'
+            ]
+    
+    if client == 'STANDARD CHARTERED BANK NIGERIA LIMITED':
+        base_providers = list(wellness_providers.loc[wellness_providers['STATE'] == state, 'PROVIDER'].unique())
+        if state == 'LAGOS':
+            return base_providers + ['Onsite - SCB Head Office - 142, Ahmadu Bello Way, Victoria Island']
+        elif state == 'RIVERS' or state == 'RIVERS ':
+            return base_providers + ['Onsite - SCB Office, 143, Port Harcourt Aba Express Road (F-0)']
+        elif state == 'FCT':
+            return base_providers + ['Onsite - SCB Office, 374 Ademola Adetokunbo Crescent Wuse II, Beside Visa/Airtel Building']
+    
+    if client == 'TRANSCORP POWER UGHELLI' and state == 'DELTA':
+        return list(wellness_providers.loc[wellness_providers['STATE'] == state, 'PROVIDER'].unique()) + ['AVON MEDICAL SITE CLINIC, Ughelli']
+    
+    if client == 'TRANS AFAM POWER PLANT LIMITED' and state == 'RIVERS':
+        return list(wellness_providers.loc[wellness_providers['STATE'] == state, 'PROVIDER'].unique()) + ['AVON MEDICAL SITE CLINIC, Afam']
+    
+    if client == 'TULIP COCOA PROCESSING' and state == 'OGUN':
+        return list(wellness_providers.loc[wellness_providers['STATE'] == state, 'PROVIDER'].unique()) + ['AMAZING GRACE HOSPITAL - 7, Iloro Street, Ijebu-Ode, Ogun State']
+    
+    if client in ['HEIRS HOLDINGS', 'TRANSCORP PLC', 'TONY ELUMELU FOUNDATION'] and state == 'LAGOS':
+        relation = wellness_df.loc[wellness_df['memberno'] == enrollee_id, 'Relation'].values[0]
+        if relation in ['MEMBER', 'FEMALE MEMBER', 'MALE MEMBER']:
+            return ['AVON Medical - Onsite']
+        return list(wellness_providers.loc[wellness_providers['STATE'] == state, 'ProviderLoc'].unique())
+    
+    if client == 'AFRILAND PROPERTIES PLC' and state == 'LAGOS':
+        return list(wellness_providers.loc[wellness_providers['STATE'] == state, 'PROVIDER'].unique()) + ['AVON Medical - Onsite']
+    
+    if client == 'TRANSCORP HOTELS ABUJA' and state == 'FCT':
+        return list(wellness_providers.loc[wellness_providers['STATE'] == state, 'PROVIDER'].unique()) + ['AVON Medical - Onsite']
+    
+    if client == 'PIVOT GIS LIMITED' and state == 'LAGOS':
+        return list(wellness_providers.loc[wellness_providers['STATE'] == state, 'PROVIDER'].unique()) + [
+            'MECURE HEALTHCARE, OSHODI - Debo Industrial Cmpd, Plot 6, Block H, Oshodi Industrial Scheme',
+            'MECURE HEALTHCARE, LEKKI - Niyi Okunubi Street, Off Admiralty way. Lekki phase 1',
+            'CLINIX HEALTHCARE, ILUPEJU - Plot B, BLKXII, Alhaji Adejumo Avenue, Ilupeju, Lagos',
+            'CLINIX HEALTHCARE, FESTAC - Dele Orisabiyi Street, Amuwo Odofin, Lagos'
+        ]
+    
+    if client == 'VERTEVILLE ENERGY':
+        if state == 'LAGOS':
+            return ['Union Diagnostics, V/I - 5 Eletu Ogabi Street, Off Adeola Odeku, Victoria Island, Lagos', 
+                    'CERBA Lancet, V/I - 3 Babatunde Jose Street, Adetokunbo Ademola']
+        elif state == 'DELTA':
+            return ['Union Diagnostics and Clinical Services - Onsite']
+        elif state == 'BORNO':
+            return ['Kanem Hospital and Maternity - 152 Tafewa Balewa road, Opp Lamisula Police station, Mafoni ward, Maiduguri.']
+        elif state == 'RIVERS':
+            return ['Union Diagnostic - Port-Harcourt: 2, Finima Street, Old GRA, Opp. Leventis bus-stop)']
+    
+    if client == 'PETROSTUFF NIGERIA LIMITED':
+        if state == 'LAGOS':
+            return ['BEACON HEALTH - No 70, Fatai Arobieke Street, Lekki Phase 1, Lagos',
+                    'AFRIGLOBAL MEDICARE DIAGNOSTIC CENTRE - 8 Mobolaji Bank Anthony Way Ikeja',
+                    'UNION DIAGNOSTICS - 5,Eletu Ogabi street off Adeola odeku V.I']
+        elif state == 'ABUJA':
+            return ['BODY AFFAIRS DIAGNOSTICS - 1349, Ahmadu Bello Way, Garki 2, Abuja']
+        elif state == 'RIVERS':
+            return ['PONYX HOSPITALS LTD - Plot 26, Presidential Estate, GRA Phase III, opp. NDDC H/Qrts, Port-Harcourt/Aba Expressway']
+    
+    if client == 'TRANSCORP HILTON HOTEL ABUJA' and state == 'ABUJA':
+        return ['TRANSCORP/E-CLINIC WELLNESS']
+    
+    if client == 'REX INSURANCE LTD':
+        if state == 'LAGOS':
+            return ['AFRIGLOBAL MEDICARE DIAGNOSTIC CENTRE - Plot 1192A Kasumu Ekemode St, Victoria Island, Lagos',
+                    'CLINIX HEALTHCARE - Plot B, BLKXII, Alhaji Adejumo Avenue, Ilupeju, Lagos']
+        elif state == 'RIVERS':
+            return ['PONYX HOSPITALS LTD - Plot 26, Presidential Estate, GRA Phase III, opp. NDDC H/Qrts, Port-Harcourt/Aba Expressway']
+        elif state == 'DELTA':
+            return ['ECHOLAB - 375B Nnebisi Road, Umuagu, Asaba, Delta']
+        elif state == 'OYO':
+            return ['BEACONHEALTH - 1, C.S Ola Street, Opposite Boldlink Ltd, Henry Tee Bus Stop, Ring Road, Ibadan']
+        elif state == 'KADUNA':
+            return ['HARMONY HOSPITAL LTD - 74, Narayi Road, Barnawa, Kaduna']
+        elif state == 'KANO':
+            return ['RAYSCAN DIAGNOSTICS LTD - Plot 4 Gyadi Court Road, Kano']
+    
+    return list(wellness_providers.loc[wellness_providers['STATE'] == state, 'ProviderLoc'].unique())
+
+
+def build_health_questionnaire():
+    family_questions = [
+        ('a. HYPERTENSION (HIGH BLOOD PRESSURE)', 'resp_1_a'),
+        ('b. DIABETES', 'resp_1_b'),
+        ('c. CANCER (ANY TYPE)', 'resp_1_c'),
+        ('d. ASTHMA', 'resp_1_d'),
+        ('e. ARTHRITIS', 'resp_1_e'),
+        ('f. HIGH CHOLESTEROL', 'resp_1_f'),
+        ('g. HEART ATTACK', 'resp_1_g'),
+        ('h. EPILEPSY', 'resp_1_h'),
+        ('i. TUBERCLOSIS', 'resp_1_i'),
+        ('j. SUBSTANCE DEPENDENCY', 'resp_1_j'),
+        ('k. MENTAL ILLNESS', 'resp_1_k'),
+    ]
+    
+    personal_questions = [
+        ('i. HYPERTENSION (HIGH BLOOD PRESSURE)', 'resp_2_a'),
+        ('ii. DIABETES', 'resp_2_b'),
+        ('iii. CANCER (ANY TYPE)', 'resp_2_c'),
+        ('iv. ASTHMA', 'resp_2_d'),
+        ('v. ULCER', 'resp_2_e'),
+        ('vi. POOR VISION', 'resp_2_f'),
+        ('vii. ALLERGY', 'resp_2_g'),
+        ('viii. ARTHRITIS/LOW BACK PAIN', 'resp_2_h'),
+        ('ix. ANXIETY/DEPRESSION', 'resp_2_i'),
+    ]
+    
+    surgical_questions = [
+        ('i. CEASAREAN SECTION', 'resp_3_a'),
+        ('ii. FRACTURE REPAIR', 'resp_3_b'),
+        ('iii. HERNIA', 'resp_3_c'),
+        ('iv. LUMP REMOVAL', 'resp_3_d'),
+        ('v. APPENDICETOMY', 'resp_3_e'),
+        ('vi. SPINE SURGERY', 'resp_3_f'),
+    ]
+    
+    wellness_questions = [
+        ('a. I avoid eating foods that are high in fat', 'resp_4_a'),
+        ('b. I have been avoiding the use or minimise my exposure to alcohol', 'resp_4_b'),
+        ('c. I have been avoiding the use of tobacco products', 'resp_4_c'),
+        ('d. I am physically fit and exercise at least 30 minutes every day', 'resp_4_d'),
+        ('e. I have been eating vegetables and fruits at least 3 times weekly', 'resp_4_e'),
+        ('f. I drink 6-8 glasses of water a day', 'resp_4_f'),
+        ('g. I maintain my weight within the recommendation for my weight, age and height', 'resp_4_g'),
+        ('h. My blood pressure is within normal range without the use of drugs', 'resp_4_h'),
+        ('i. My cholesterol level is within the normal range', 'resp_4_i'),
+        ('j. I easily make decisions without worry', 'resp_4_j'),
+        ('k. I enjoy more than 5 hours of sleep at night', 'resp_4_k'),
+        ('l. I enjoy my work and life', 'resp_4_l'),
+        ('m. I enjoy the support from friends and family', 'resp_4_m'),
+        ('n. I feel bad about myself or that I am a failure or have let myself or my family down', 'resp_4_n'),
+        ('o. I have poor appetite or I am over-eating', 'resp_4_o'),
+        ('p. I feel down, depressed, hopeless, tired or have little energy', 'resp_4_p'),
+        ('q. I have trouble falling asleep, staying asleep, or sleeping too much', 'resp_4_q'),
+        ('r. I have no interest or pleasure in doing things', 'resp_4_r'),
+        ('s. I have trouble concentrating on things, such as reading the newspaper, or watching TV', 'resp_4_s'),
+        ('t. I think I would be better off dead or better off hurting myself in some way', 'resp_4_t'),
+    ]
+    
+    sections = []
+    
+    sections.append(html.Div(className="questionnaire-section", children=[
+        html.H5("1. Family Medical History", className="fw-semibold"),
+        html.P("Have any of your family members experienced any of the following conditions?", className="text-muted small mb-3")
+    ]))
+    
+    for q, qid in family_questions:
+        sections.append(html.Div(className="mb-3", children=[
+            html.P(q, className='question-label mb-2'),
+            dbc.RadioItems(
+                id=f'radio-{qid}',
+                options=[
+                    {'label': ' Grand Parent(s) ', 'value': 'Grand Parent(s)'},
+                    {'label': ' Parent(s) ', 'value': 'Parent(s)'},
+                    {'label': ' Uncle/Aunty ', 'value': 'Uncle/Aunty'},
+                    {'label': ' Nobody ', 'value': 'Nobody'}
+                ],
+                value='Grand Parent(s)',
+                inline=True,
+                className="custom-radio"
+            )
+        ]))
+    
+    sections.append(html.Hr(className="section-divider"))
+    sections.append(html.Div(className="questionnaire-section", children=[
+        html.H5("2. Personal Medical History", className="fw-semibold"),
+        html.P("Do you have any of the following condition(s) that you are managing?", className="text-muted small mb-3")
+    ]))
+    
+    for q, qid in personal_questions:
+        sections.append(html.Div(className="mb-3", children=[
+            html.P(q, className='question-label mb-2'),
+            dbc.RadioItems(
+                id=f'radio-{qid}',
+                options=[
+                    {'label': ' Yes ', 'value': 'Yes'},
+                    {'label': ' No ', 'value': 'No'},
+                    {'label': ' Yes, but not on Medication ', 'value': 'Yes, but not on Medication'}
+                ],
+                value='Yes',
+                inline=True,
+                className="custom-radio"
+            )
+        ]))
+    
+    sections.append(html.Hr(className="section-divider"))
+    sections.append(html.Div(className="questionnaire-section", children=[
+        html.H5("3. Personal Surgical History", className="fw-semibold"),
+        html.P("Have you ever had surgery for any of the following?", className="text-muted small mb-3")
+    ]))
+    
+    for q, qid in surgical_questions:
+        sections.append(html.Div(className="mb-3", children=[
+            html.P(q, className='question-label mb-2'),
+            dbc.RadioItems(
+                id=f'radio-{qid}',
+                options=[
+                    {'label': ' Yes ', 'value': 'Yes'},
+                    {'label': ' No ', 'value': 'No'}
+                ],
+                value='Yes',
+                inline=True,
+                className="custom-radio"
+            )
+        ]))
+    
+    sections.append(html.Hr(className="section-divider"))
+    sections.append(html.Div(className="questionnaire-section", children=[
+        html.H5("4. Health Survey Questionnaire", className="fw-semibold"),
+        html.P("Kindly provide valid responses to the following questions", className="text-muted small mb-3")
+    ]))
+    
+    for q, qid in wellness_questions:
+        sections.append(html.Div(className="mb-3", children=[
+            html.P(q, className='question-label mb-2'),
+            dbc.RadioItems(
+                id=f'radio-{qid}',
+                options=[
+                    {'label': ' Never ', 'value': 'Never'},
+                    {'label': ' Occasional ', 'value': 'Occasional'},
+                    {'label': ' Always ', 'value': 'Always'},
+                    {'label': ' I Do Not Know ', 'value': 'I Do Not Know'}
+                ],
+                value='Never',
+                inline=True,
+                className="custom-radio"
+            )
+        ]))
+    
+    return html.Div(sections)
+
+
+def build_enrollment_form(enrollee_data):
+    client = enrollee_data['client']
+    policy = enrollee_data['policy']
+    age = enrollee_data['age']
+    relation = enrollee_data['relation']
+    
+    current_date = dt.date.today()
+    max_date = dt.date(2027, 12, 31)
+    
+    if client == 'PIVOT GIS LIMITED' or client == 'PIVOT   GIS LIMITED':
+        max_date = dt.date(2024, 12, 31)
+    elif client == 'UNITED BANK FOR AFRICA':
+        max_date = dt.date(2028, 2, 1)
+    
+    form = dbc.Card([
+        dbc.CardBody([
+            html.H4("Kindly fill all the fields below to proceed", className='mb-4', style={"color": "#44337A"}),
+            
+            dbc.Row([
+                dbc.Col([
+                    html.Label("Input a Valid Email Address", className="small fw-medium", style={"color": "#44337A"}),
+                    dcc.Input(id='email-input', type='email', placeholder='you@company.com', 
+                             className='form-control form-input', style={"fontSize": "16px"})
+                ], width=12, md=6, className="mb-3"),
+                dbc.Col([
+                    html.Label("Input a Valid Mobile Number", className="small fw-medium", style={"color": "#44337A"}),
+                    dcc.Input(id='mobile-input', type='text', placeholder='080...', 
+                             className='form-control form-input', style={"fontSize": "16px"})
+                ], width=12, md=6, className="mb-3")
+            ]),
+            
+            dbc.Row([
+                dbc.Col([
+                    html.Label("Gender", className="small fw-medium d-block mb-2", style={"color": "#44337A"}),
+                    dbc.RadioItems(
+                        id='gender-radio',
+                        options=[{'label': ' Male ', 'value': 'Male'}, {'label': ' Female ', 'value': 'Female'}],
+                        value='Male',
+                        inline=True,
+                        className="mb-3"
+                    )
+                ], width=12)
+            ]),
+            
+            dbc.Row([
+                dbc.Col([
+                    html.Label("Nature of Work / Occupation Type", className="small fw-medium", style={"color": "#44337A"}),
+                    dcc.Dropdown(
+                        id='job-type-select',
+                        options=get_job_options(client, policy),
+                        value='',
+                        placeholder='Select Work Category',
+                        className="mb-3"
+                    )
+                ], width=12)
+            ]),
+            
+            html.Hr(className="my-4"),
+            
+            dbc.Row([
+                dbc.Col([
+                    html.Label("Your Current Location", className="small fw-medium", style={"color": "#44337A"}),
+                    dcc.Dropdown(
+                        id='state-select',
+                        options=get_state_options(client),
+                        value='',
+                        placeholder='Pick your Current State of Residence',
+                        className="mb-3"
+                    )
+                ], width=12)
+            ]),
+            
+            dbc.Row([
+                dbc.Col([
+                    html.Label("Pick your Preferred Wellness Facility", className="small fw-medium", style={"color": "#44337A"}),
+                    dcc.Dropdown(
+                        id='provider-select',
+                        options=[],
+                        value='',
+                        placeholder='Select a Provider',
+                        className="mb-3"
+                    )
+                ], width=12)
+            ]),
+            
+            dbc.Row([
+                dbc.Col([
+                    html.Label("Select Your Preferred Appointment Date", className="small fw-medium", style={"color": "#44337A"}),
+                    dcc.DatePickerSingle(
+                        id='date-picker',
+                        min_date_allowed=current_date,
+                        max_date_allowed=max_date,
+                        initial_visible_month=current_date,
+                        date=None,
+                        className="mb-3"
+                    )
+                ], width=12)
+            ], className="mb-3", id='date-picker-row'),
+            
+            dbc.Row([
+                dbc.Col(id='session-radio-container', width=12)
+            ], className='mb-3'),
+            
+            dbc.Alert("Fill the questionnaire below to complete your wellness booking", 
+                     color="info", id='booking-info-alert',
+                     style={"backgroundColor": "#EBF8FF", "border": "1px solid #4299E1", "color": "#2C5282"}),
+            
+            html.Hr(className="my-4"),
+            
+            build_health_questionnaire(),
+            
+            html.Hr(className="my-4"),
+            
+            dbc.Button([
+                html.Span("Submit Booking ", className="me-2"),
+                html.Span("✓")
+            ], id='submit-form-btn', color='primary', size='lg', 
+               className="w-100 btn-primary-custom d-flex align-items-center justify-content-center", style={"color": "white"})
+            
+        ])
+    ], className="card-glass border-0", style={"borderRadius": "24px"})
+    
+    return html.Div([form], className="px-3")
+
+
+def send_confirmation_email(enrollee_id, member_name, email, provider, benefits, selected_date, session, client, date_communicated=False):
+    myemail = 'noreply@avonhealthcare.com'
+    password = os.environ.get('email_password')
+    
+    msg_befor_table = f'''
+    Dear {member_name},<br><br>
+    We hope you are staying safe.<br><br>
+    You have been scheduled for a wellness screening at your selected provider, see the below table for details.<br><br>
+    '''
+    
+    wellness_table = {
+        "Appointment Date": [selected_date + ' - ' + session] if session and not date_communicated else [selected_date],
+        "Wellness Facility": [provider],
+        "Wellness Benefits": [benefits]
+    }
+    
+    wellness_table_html = pd.DataFrame(wellness_table).to_html(index=False, escape=False)
+    
+    table_html = f"""
+    <style>
+    table {{
+            border: 1px solid #1C6EA4;
+            background-color: #EEEEEE;
+            width: 100%;
+            text-align: left;
+            border-collapse: collapse;
+            }}
+            table td, table th {{
+            border: 1px solid #AAAAAA;
+            padding: 3px 2px;
+            }}
+            table tbody td {{
+            font-size: 13px;
+            }}
+            table thead {{
+            background: #59058D;
+            border-bottom: 2px solid #444444;
+            }}
+            table thead th {{
+            font-size: 15px;
+            font-weight: bold;
+            color: #FFFFFF;
+            border-left: 2px solid #D0E4F5;
+            }}
+            table thead th:first-child {{
+            border-left: none;
+            }}
+    </style>
+    <table>
+    {wellness_table_html}
+    </table>
+    """
+    
+    text_after_table = f'''
+    <br>Kindly note the following requirements for your wellness exercise:<br><br>
+    -Present at the hospital with your Avon member ID number ({enrollee_id})/ Ecard.<br>
+    -Provide the facility with your valid email address to mail your result.<br>
+    -Visit your designated centers between the hours of 8 am - 11 am any day of the week from the scheduled date communicated.<br>
+    -Arrive at the facility fasting i.e. last meals should be before 9 pm the previous night and nothing should be eaten that morning before the test.
+    You are allowed to drink up to two cups of water.<br><br>
+    For the best results of your screening, it is advisable for blood tests to be done on or before 10 am.<br><br>
+    Your results will be strictly confidential and will be sent to you directly via your email. You are advised to review
+    your results with your primary care provider for relevant medical advice.<br><br>
+    <b>Kindly note that your wellness result will only be available two (2) weeks after your visit to the provider for your wellness check.</b><br><br>
+    Should you require assistance at any time or wish to make any complaint about the service at any of the facilities, 
+    please contact our Call-Center at 0700-277-9800  or send us a chat on WhatsApp at 0912-603-9532. 
+    You can also send us an email at callcentre@avonhealthcare.com. Please be assured that an agent would always be on standby to assist you.<br><br>
+    Thank you for choosing Avon HMO,<br><br>
+    Medical Services.<br>
+    '''
+    
+    text_after_table1 = f'''
+    <br>Kindly note that wellness exercise at your selected facility is strictly by appointment and
+    and you are expected to be available at the facility on the appointment date as selected by you.<br><br>
+    Also, note that you will be required to:<br><br>
+    -Present at the facility with your Avon member ID number ({enrollee_id})/ Ecard.<br>
+    -Provide the facility with your valid email address to mail your result.<br>
+    -You are advised to be present at your selected facility 15 mins before your scheduled time.<br><br>
+    Your results will be strictly confidential and will be sent to you directly via your email. You are advised to review
+    your results with your primary care provider for relevant medical advice.<br><br>
+    <b>Kindly note that your wellness result will only be available two (2) weeks after your visit to the provider for your wellness check.</b><br><br>
+    Should you require assistance at any time or wish to make any complaint about the service at any of the facilities, 
+    please contact our Call-Center at 0700-277-9800  or send us a chat on WhatsApp at 0912-603-9532. 
+    You can also send us an email at callcentre@avonhealthcare.com. Please be assured that an agent would always be on standby to assist you.<br><br>
+    Thank you for choosing Avon HMO,<br><br>
+    Medical Services.<br>
+    '''
+    
+    head_office_msg = f'''
+    Dear {member_name},<br><br>
+    We hope you are staying safe.<br><br>
+    You have been scheduled for a wellness screening at {provider}.<br><br>
+    Find listed below your wellness benefits:<br><br><b>{benefits}</b>.<br><br>
+    Kindly note the following regarding your wellness appointment:<br><br>
+    - HR will reach out to you with a scheduled date and time for your annual wellness.<br><br>
+    - Once scheduled, you are to present your Avon HMO ID card or member ID - {enrollee_id} at the point of accessing your annual wellness check.<br><br>
+    - The wellness exercise will take place at the designated floor which will be communicated to you by the HR between 9 am and 4 pm from Monday – Friday. <br><br>
+    - For the most accurate fasting blood sugar test results, it is advisable for blood tests to be done before 10am. <br><br>
+    - Staff results will be sent to the email addresses provided by them to the wellness providers.<br><br>
+    - There will be consultation with a physician to review immediate test results on-site while other test results that are not readily available will be reviewed by a physician at your Primary Care Provider.<br><br>
+    Should you require assistance at any time or wish to make any complaint about the service rendered during this wellness exercise,
+    please contact our Call-Center at 0700-277-9800 or send us a chat on WhatsApp at 0912-603-9532.
+    You can also send us an email at callcentre@avonhealthcare.com. Please be assured that an agent would always be on standby to assist you.<br><br>
+    Thank you for choosing Avon HMO.<br><br>
+    Medical Services.<br>
+    '''
+    
+    pivotgis_msg = f'''
+    <br>Kindly note that this wellness activation is only valid till the 31st of December, 2024.<br><br>
+    Also, note that you will be required to:<br><br>
+    -Present at the hospital with your Avon member ID number ({enrollee_id})/ Ecard.<br>
+    -Provide the facility with your valid email address to mail your result.<br>
+    -You are advised to be present at your selected facility 15 mins before your scheduled time.<br><br>
+    Your results will be strictly confidential and will be sent to you directly via your email. You are advised to review
+    your results with your primary care provider for relevant medical advice.<br><br>
+    <b>Kindly note that your wellness result will only be available two (2) weeks after your visit to the provider for your wellness check.</b><br><br>
+    Should you require assistance at any time or wish to make any complaint about the service at any of the facilities, 
+    please contact our Call-Center at 0700-277-9800  or send us a chat on WhatsApp at 0912-603-9532. 
+    You can also send us an email at callcentre@avonhealthcare.com. Please be assured that an agent would always be on standby to assist you.<br><br>
+    Thank you for choosing Avon HMO,<br><br>
+    Medical Services.<br>
+    '''
+    
+    email_sent = False
+    email_error = ''
+    
+    if client == 'UNITED BANK FOR AFRICA':
+        if 'UBA Head Office' in provider:
+            full_message = msg_befor_table + table_html + head_office_msg
+        elif 'CERBA LANCET' in provider or 'CERBA LANCET NIGERIA' in provider:
+            full_message = msg_befor_table + table_html + text_after_table1
+        else:
+            full_message = msg_befor_table + table_html + text_after_table
+    elif client == 'PIVOT GIS LIMITED' or client == 'PIVOT   GIS LIMITED':
+        full_message = msg_befor_table + table_html + pivotgis_msg
+    else:
+        full_message = msg_befor_table + table_html + text_after_table
+    
+    bcc_email_list = ['ifeoluwa.adeniyi@avonhealthcare.com', 'ifeoluwa.adeniyi@avonhealthcare.com']
+    
+    if provider in ['ECHOLAB - Opposite mararaba medical centre, Tipper Garage, Mararaba',
+                    'TOBIS CLINIC - Chief Melford Okilo Road Opposite Sobaz Filling Station, Akenfa –Epie',
+                    'ECHOLAB - 375B Nnebisi Road, Umuagu, Asaba']:
+        bcc_email_list.extend(['ifeoluwa.adeniyi@avonhealthcare.com', 'ifeoluwa.adeniyi@avonhealthcare.com'])
+    
+    try:
+        server = smtplib.SMTP('smtp.office365.com', 587)
+        server.starttls()
+        server.login(myemail, password)
+        
+        msg = MIMEMultipart()
+        msg['From'] = 'AVON HMO Client Services'
+        msg['To'] = email
+        msg['Bcc'] = ', '.join(bcc_email_list)
+        msg['Subject'] = 'AVON ENROLLEE WELLNESS APPOINTMENT CONFIRMATION'
+        msg.attach(MIMEText(full_message, 'html'))
+        
+        server.sendmail(myemail, [email] + bcc_email_list, msg.as_string())
+        server.quit()
+        email_sent = True
+    except Exception as e:
+        email_error = str(e)
+        print(f"Email error: {e}")
+    
+    return email_sent, email_error
+
+
+# =============================================================================
+# APP
+# =============================================================================
 app = dash.Dash(
     __name__,
     external_stylesheets=[
@@ -72,6 +722,9 @@ app.title = "AVON HMO Enrollee Annual Wellness Portal"
 
 server = app.server
 
+# =============================================================================
+# CUSTOM CSS
+# =============================================================================
 CUSTOM_CSS = """
 <style>
     @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Playfair+Display:wght@400;500;600;700&display=swap');
@@ -297,74 +950,9 @@ app.index_string = f'''
 </html>
 '''
 
-sterling_bank_enrollees = ['100552', '101401', '45492', '45509', '45537', '45704', '45711', '45712', '45747', '45748', '67106', '67113', '67132', '67133', '80701', '105096', '45532']
-
-wellness_df = None
-wellness_providers = None
-loyalty_enrollees = None
-filled_wellness_df = None
-
-def load_all_data():
-    global wellness_providers, loyalty_enrollees, filled_wellness_df
-    query2 = 'SELECT a.MemberNo,a.MemberName,a.Client,a.email,a.state,a.selected_provider,a.Wellness_benefits,a.selected_date,a.selected_session,a.date_submitted FROM demo_tbl_annual_wellness_enrollee_data a INNER JOIN (SELECT MemberNo, MAX(PolicyEndDate) AS max_end_date FROM demo_tbl_annual_wellness_enrollee_data GROUP BY MemberNo) latest ON  a.MemberNo     = latest.MemberNo AND a.PolicyEndDate = latest.max_end_date;'
-    query3 = "select a.CODE, a.STATE, PROVIDER_NAME, a.ADDRESS,Provider_Name + ' - ' + Location as ProviderLoc, PROVIDER, name from Updated_Wellness_Providers a join tbl_Providerlist_stg b on a.CODE = b.code"
-    query4 = 'select * from vw_loyaltybeneficiaries'
-    
-    print("[LOADING] Loading wellness providers data...")
-    wellness_providers = cached_read_sql(query3)
-    print("[COMPLETE] Wellness providers data loaded!")
-    
-    print("[LOADING] Loading loyalty enrollees data...")
-    loyalty_enrollees = cached_read_sql(query4)
-    print("[COMPLETE] Loyalty enrollees data loaded!")
-    
-    print("[LOADING] Loading filled wellness data...")
-    filled_wellness_df = cached_read_sql(query2)
-    print("[COMPLETE] Filled wellness data loaded!")
-    
-    filled_wellness_df['MemberNo'] = filled_wellness_df['MemberNo'].astype(str)
-    loyalty_enrollees['MemberNo'] = loyalty_enrollees['MemberNo'].astype(str)
-    print("[ALL COMPLETE] All startup data loaded successfully!")
-
-
-def load_wellness_df():
-    global wellness_df
-    query1 = "SELECT * from vw_new_wellness_enrollee_portal_update"
-    print("[LOADING] Loading wellness_df (vw_new_wellness_enrollee_portal_update)...")
-    wellness_df = cached_read_sql(query1)
-    wellness_df['memberno'] = wellness_df['memberno'].astype(int).astype(str)
-    print("[COMPLETE] wellness_df loaded!")
-
-def _prewarm():
-    try:
-        load_all_data()
-        print("[cache] Pre-warm complete.")
-    except Exception as e:
-        print(f"[cache] Pre-warm warning: {e}")
-
-threading.Thread(target=_prewarm, daemon=True).start()
-
-ladol_special = pd.read_csv('Ladol Special Wellness.csv')
-
-image_filename = 'wellness_image_1.png'
-encoded_image = base64.b64encode(open(image_filename, 'rb').read()).decode()
-
-initial_user_data = {
-    'email': '', 'mobile_num': '', 'state': 'ABIA',
-    'selected_provider': 'ROSEVINE HOSPITAL  -  73 ABA OWERRI ROAD, ABA',
-    'job_type': 'Mainly Desk Work', 'gender': 'Male',
-}
-for i in list('abcdefghijk'):
-    initial_user_data[f'resp_1_{i}'] = 'Grand Parent(s)'
-for i in list('abcdefghi'):
-    initial_user_data[f'resp_2_{i}'] = 'Yes'
-for i in list('abcdef'):
-    initial_user_data[f'resp_3_{i}'] = 'Yes'
-for i in list('abcdefghijklmnopqrst'):
-    initial_user_data[f'resp_4_{i}'] = 'Never'
-
-data_loaded = False
-
+# =============================================================================
+# LOADING SCREEN
+# =============================================================================
 def loading_screen():
     return html.Div([
         html.Div(className="purple-skew"),
@@ -387,12 +975,94 @@ def loading_screen():
         ], className="text-center")
     ], className="gradient-bg min-vh-100 d-flex align-items-center justify-content-center p-4 position-relative overflow-hidden")
 
+
+# =============================================================================
+# PORTAL LAYOUTS
+# =============================================================================
+def portal_layout():
+    return html.Div([
+        dcc.Location(id='url-welcome', refresh=False),
+        
+        html.Div(className="purple-skew"),
+        html.Div(className="green-blob"),
+        
+        html.Div(
+            className="position-relative w-100",
+            style={"maxWidth": "520px", "zIndex": "10", "margin": "0 auto"},
+            children=[
+                html.Div([
+                    html.Div(className="logo-container mb-4", children=[
+                        Svg(
+                            width="32", height="32", viewBox="0 0 24 24",
+                            fill="none", stroke="white",
+                            style={"strokeWidth": "2", "strokeLinecap": "round", "strokeLinejoin": "round"},
+                            children=[
+                                Path(d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z"),
+                                Path(d="m9 12 2 2 4-4")
+                            ]
+                        )
+                    ]),
+                    html.H1("Wellness Portal", className="text-4xl fw-bold mb-2", style={"color": "#44337A", "fontSize": "2rem"}),
+                    html.P("AVON HMO Enrollee Annual Wellness Portal. Check your eligibility and book your annual wellness checkup.",
+                           className="text-lg mb-4", style={"color": "#718096"}),
+                ], className="text-center mb-5"),
+
+                dbc.Card([
+                    dbc.CardBody([
+                        html.Div([
+                            html.Label("Member Number / Policy ID", className="fw-medium mb-2", style={"color": "#44337A"}),
+                            dcc.Input(
+                                id='enrollee-id-input',
+                                type='text',
+                                placeholder='Enter your Member ID',
+                                className='form-control form-input mb-3',
+                                style={"fontSize": "18px"}
+                            ),
+                            html.Div(id='eligibility-message'),
+                            
+                            dbc.Button([
+                                html.Span("Check Eligibility ", className="me-2"),
+                                html.Span("→")
+                            ], id='member-id-submit-btn', color="primary",
+                               className="w-100 btn-primary-custom d-flex align-items-center justify-content-center",
+                               style={"color": "white"}),
+                            
+                            html.Small("Enter your Member ID from URL (?member=12345) or manually", 
+                                      className="d-block text-center mt-3", style={"color": "rgba(113, 128, 150, 0.6)"})
+                        ], className="p-2")
+                    ])
+                ], className="card-glass border-0", style={"borderRadius": "24px"}),
+
+                html.Div([
+                    dbc.Row([
+                        dbc.Col(id='already-booked-section', width=12)
+                    ]),
+                    
+                    dbc.Row([
+                        dbc.Col(id='enrollment-form-section', width=12)
+                    ]),
+                ], className="mt-4"),
+
+                html.P(f"© {dt.datetime.now().year} AVON HMO. All rights reserved.",
+                       className="text-center mt-4 small", style={"color": "rgba(113, 128, 150, 0.6)"})
+            ]
+        )
+    ], className="gradient-bg min-vh-100 d-flex align-items-center justify-content-center p-4 position-relative overflow-hidden")
+
+
+# =============================================================================
+# APP LAYOUT
+# =============================================================================
 app.layout = html.Div([
     dcc.Store(id='data-ready-store', data=False),
     dcc.Interval(id='data-check-interval', interval=500, n_intervals=0),
     html.Div(id='main-content')
 ])
 
+
+# =============================================================================
+# CALLBACKS
+# =============================================================================
 
 @app.callback(
     [Output('main-content', 'children'),
@@ -417,74 +1087,7 @@ def render_content(data_ready):
             dcc.Store(id='questionnaire-responses', data={}),
             dcc.Store(id='session-store', data=''),
             
-            html.Div([
-                dcc.Location(id="url-welcome", refresh=False),
-                
-                html.Div(className="purple-skew"),
-                html.Div(className="green-blob"),
-                
-                html.Div(
-                    className="position-relative w-100",
-                    style={"maxWidth": "520px", "zIndex": "10", "margin": "0 auto"},
-                    children=[
-                        html.Div([
-                            html.Div(className="logo-container mb-4", children=[
-                                Svg(
-                                    width="32", height="32", viewBox="0 0 24 24",
-                                    fill="none", stroke="white",
-                                    style={"strokeWidth": "2", "strokeLinecap": "round", "strokeLinejoin": "round"},
-                                    children=[
-                                        Path(d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z"),
-                                        Path(d="m9 12 2 2 4-4")
-                                    ]
-                                )
-                            ]),
-                            html.H1("Wellness Portal", className="text-4xl fw-bold mb-2", style={"color": "#44337A", "fontSize": "2rem"}),
-                            html.P("AVON HMO Enrollee Annual Wellness Portal. Check your eligibility and book your annual wellness checkup.",
-                                   className="text-lg mb-4", style={"color": "#718096"}),
-                        ], className="text-center mb-5"),
-
-                        dbc.Card([
-                            dbc.CardBody([
-                                html.Div([
-                                    html.Label("Member Number / Policy ID", className="fw-medium mb-2", style={"color": "#44337A"}),
-                                    dcc.Input(
-                                        id='enrollee-id-input',
-                                        type='text',
-                                        placeholder='Enter your Member ID',
-                                        className='form-control form-input mb-3',
-                                        style={"fontSize": "18px"}
-                                    ),
-                                    html.Div(id='eligibility-message'),
-                                    
-                                    dbc.Button([
-                                        html.Span("Check Eligibility ", className="me-2"),
-                                        html.Span("→")
-                                    ], id='member-id-submit-btn', color="primary",
-                                       className="w-100 btn-primary-custom d-flex align-items-center justify-content-center",
-                                       style={"color": "white"}),
-                                    
-                                    html.Small("Enter your Member ID from URL (?member=12345) or manually", 
-                                              className="d-block text-center mt-3", style={"color": "rgba(113, 128, 150, 0.6)"})
-                                ], className="p-2")
-                            ])
-                        ], className="card-glass border-0", style={"borderRadius": "24px"}),
-
-                        html.Div([
-                            dbc.Row([
-                                dbc.Col(id='already-booked-section', width=12)
-                            ]),
-                            
-                            dbc.Row([
-                                dbc.Col(id='enrollment-form-section', width=12)
-                            ]),
-                        ], className="mt-4"),
-
-                        html.P(f"© {dt.datetime.now().year} AVON HMO. All rights reserved.",
-                               className="text-center mt-4 small", style={"color": "rgba(113, 128, 150, 0.6)"})
-                    ]
-                )
-            ], className="gradient-bg min-vh-100 d-flex align-items-center justify-content-center p-4 position-relative overflow-hidden"),
+            portal_layout(),
             
             dbc.Modal([
                 dbc.ModalHeader("Submission Successful", style={"fontFamily": "Playfair Display, serif", "color": "#44337A"}),
@@ -616,316 +1219,6 @@ def check_eligibility(url_search, n_clicks, n_submit, enrollee_id, stored_data):
     return not_eligible, "", "", {}, enrollee_id
 
 
-def build_enrollment_form(enrollee_data):
-    client = enrollee_data['client']
-    policy = enrollee_data['policy']
-    age = enrollee_data['age']
-    relation = enrollee_data['relation']
-    
-    current_date = dt.date.today()
-    max_date = dt.date(2027, 12, 31)
-    
-    if client == 'PIVOT GIS LIMITED' or client == 'PIVOT   GIS LIMITED':
-        max_date = dt.date(2024, 12, 31)
-    elif client == 'UNITED BANK FOR AFRICA':
-        max_date = dt.date(2028, 2, 1)
-    
-    form = dbc.Card([
-        dbc.CardBody([
-            html.H4("Kindly fill all the fields below to proceed", className='mb-4', style={"color": "#44337A"}),
-            
-            dbc.Row([
-                dbc.Col([
-                    html.Label("Input a Valid Email Address", className="small fw-medium", style={"color": "#44337A"}),
-                    dcc.Input(id='email-input', type='email', placeholder='you@company.com', 
-                             className='form-control form-input', style={"fontSize": "16px"})
-                ], width=12, md=6, className="mb-3"),
-                dbc.Col([
-                    html.Label("Input a Valid Mobile Number", className="small fw-medium", style={"color": "#44337A"}),
-                    dcc.Input(id='mobile-input', type='text', placeholder='080...', 
-                             className='form-control form-input', style={"fontSize": "16px"})
-                ], width=12, md=6, className="mb-3")
-            ]),
-            
-            dbc.Row([
-                dbc.Col([
-                    html.Label("Gender", className="small fw-medium d-block mb-2", style={"color": "#44337A"}),
-                    dbc.RadioItems(
-                        id='gender-radio',
-                        options=[{'label': ' Male ', 'value': 'Male'}, {'label': ' Female ', 'value': 'Female'}],
-                        value='Male',
-                        inline=True,
-                        className="mb-3"
-                    )
-                ], width=12)
-            ]),
-            
-            dbc.Row([
-                dbc.Col([
-                    html.Label("Nature of Work / Occupation Type", className="small fw-medium", style={"color": "#44337A"}),
-                    dcc.Dropdown(
-                        id='job-type-select',
-                        options=get_job_options(client, policy),
-                        value='',
-                        placeholder='Select Work Category',
-                        className="mb-3"
-                    )
-                ], width=12)
-            ]),
-            
-            html.Hr(className="my-4"),
-            
-            dbc.Row([
-                dbc.Col([
-                    html.Label("Your Current Location", className="small fw-medium", style={"color": "#44337A"}),
-                    dcc.Dropdown(
-                        id='state-select',
-                        options=get_state_options(client),
-                        value='',
-                        placeholder='Pick your Current State of Residence',
-                        className="mb-3"
-                    )
-                ], width=12)
-            ]),
-            
-            dbc.Row([
-                dbc.Col([
-                    html.Label("Pick your Preferred Wellness Facility", className="small fw-medium", style={"color": "#44337A"}),
-                    dcc.Dropdown(
-                        id='provider-select',
-                        options=[],
-                        value='',
-                        placeholder='Select a Provider',
-                        className="mb-3"
-                    )
-                ], width=12)
-            ]),
-            
-            dbc.Row([
-                dbc.Col([
-                    html.Label("Select Your Preferred Appointment Date", className="small fw-medium", style={"color": "#44337A"}),
-                    dcc.DatePickerSingle(
-                        id='date-picker',
-                        min_date_allowed=current_date,
-                        max_date_allowed=max_date,
-                        initial_visible_month=current_date,
-                        date=None,
-                        className="mb-3"
-                    )
-                ], width=12)
-            ], className="mb-3", id='date-picker-row'),
-            
-            dbc.Row([
-                dbc.Col(id='session-radio-container', width=12)
-            ], className='mb-3'),
-            
-            dbc.Alert("Fill the questionnaire below to complete your wellness booking", 
-                     color="info", id='booking-info-alert',
-                     style={"backgroundColor": "#EBF8FF", "border": "1px solid #4299E1", "color": "#2C5282"}),
-            
-            html.Hr(className="my-4"),
-            
-            build_health_questionnaire(),
-            
-            html.Hr(className="my-4"),
-            
-            dbc.Button([
-                html.Span("Submit Booking ", className="me-2"),
-                html.Span("✓")
-            ], id='submit-form-btn', color='primary', size='lg', 
-               className="w-100 btn-primary-custom d-flex align-items-center justify-content-center", style={"color": "white"})
-            
-        ])
-    ], className="card-glass border-0", style={"borderRadius": "24px"})
-    
-    return html.Div([form], className="px-3")
-
-
-def get_job_options(client, policy):
-    if policy == 'TOTAL ENERGIES MANAGED CARE PLAN':
-        return [
-            {'label': 'Offshore Personnel', 'value': 'Offshore Personnel'},
-            {'label': 'Fire Team', 'value': 'Fire Team'},
-            {'label': 'MERT', 'value': 'MERT'},
-            {'label': 'Lab Personnel', 'value': 'Lab Personnel'},
-            {'label': 'Admin and Others', 'value': 'Admin and Others'}
-        ]
-    return [
-        {'label': 'Mainly Desk Work', 'value': 'Mainly Desk Work'},
-        {'label': 'Mainly Field Work', 'value': 'Mainly Field Work'},
-        {'label': 'Desk and Field Work', 'value': 'Desk and Field Work'},
-        {'label': 'Physical Outdoor Work', 'value': 'Physical Outdoor Work'},
-        {'label': 'Physical Indoor Work', 'value': 'Physical Indoor Work'}
-    ]
-
-
-def get_state_options(client):
-    excluded_state = 'HQ'
-    available_states = list(wellness_providers['STATE'].unique())
-    available_states = [s for s in available_states if s != excluded_state]
-    
-    state_map = {
-        'UNITED BANK FOR AFRICA': [s for s in available_states if s != 'HQ'],
-        'VERTEVILLE ENERGY': ['LAGOS', 'BORNO', 'DELTA', 'RIVERS'],
-        'PETROSTUFF NIGERIA LIMITED': ['LAGOS', 'ABUJA', 'RIVERS'],
-        'TRANSCORP HILTON HOTEL ABUJA': ['ABUJA'],
-        'REX INSURANCE LTD': ['LAGOS', 'RIVERS', 'DELTA', 'OYO', 'KADUNA', 'KANO']
-    }
-    return [{'label': s, 'value': s} for s in state_map.get(client, [s for s in available_states if s != 'HQ'])]
-
-
-def build_health_questionnaire():
-    family_questions = [
-        ('a. HYPERTENSION (HIGH BLOOD PRESSURE)', 'resp_1_a'),
-        ('b. DIABETES', 'resp_1_b'),
-        ('c. CANCER (ANY TYPE)', 'resp_1_c'),
-        ('d. ASTHMA', 'resp_1_d'),
-        ('e. ARTHRITIS', 'resp_1_e'),
-        ('f. HIGH CHOLESTEROL', 'resp_1_f'),
-        ('g. HEART ATTACK', 'resp_1_g'),
-        ('h. EPILEPSY', 'resp_1_h'),
-        ('i. TUBERCLOSIS', 'resp_1_i'),
-        ('j. SUBSTANCE DEPENDENCY', 'resp_1_j'),
-        ('k. MENTAL ILLNESS', 'resp_1_k'),
-    ]
-    
-    personal_questions = [
-        ('i. HYPERTENSION (HIGH BLOOD PRESSURE)', 'resp_2_a'),
-        ('ii. DIABETES', 'resp_2_b'),
-        ('iii. CANCER (ANY TYPE)', 'resp_2_c'),
-        ('iv. ASTHMA', 'resp_2_d'),
-        ('v. ULCER', 'resp_2_e'),
-        ('vi. POOR VISION', 'resp_2_f'),
-        ('vii. ALLERGY', 'resp_2_g'),
-        ('viii. ARTHRITIS/LOW BACK PAIN', 'resp_2_h'),
-        ('ix. ANXIETY/DEPRESSION', 'resp_2_i'),
-    ]
-    
-    surgical_questions = [
-        ('i. CEASAREAN SECTION', 'resp_3_a'),
-        ('ii. FRACTURE REPAIR', 'resp_3_b'),
-        ('iii. HERNIA', 'resp_3_c'),
-        ('iv. LUMP REMOVAL', 'resp_3_d'),
-        ('v. APPENDICETOMY', 'resp_3_e'),
-        ('vi. SPINE SURGERY', 'resp_3_f'),
-    ]
-    
-    wellness_questions = [
-        ('a. I avoid eating foods that are high in fat', 'resp_4_a'),
-        ('b. I have been avoiding the use or minimise my exposure to alcohol', 'resp_4_b'),
-        ('c. I have been avoiding the use of tobacco products', 'resp_4_c'),
-        ('d. I am physically fit and exercise at least 30 minutes every day', 'resp_4_d'),
-        ('e. I have been eating vegetables and fruits at least 3 times weekly', 'resp_4_e'),
-        ('f. I drink 6-8 glasses of water a day', 'resp_4_f'),
-        ('g. I maintain my weight within the recommendation for my weight, age and height', 'resp_4_g'),
-        ('h. My blood pressure is within normal range without the use of drugs', 'resp_4_h'),
-        ('i. My cholesterol level is within the normal range', 'resp_4_i'),
-        ('j. I easily make decisions without worry', 'resp_4_j'),
-        ('k. I enjoy more than 5 hours of sleep at night', 'resp_4_k'),
-        ('l. I enjoy my work and life', 'resp_4_l'),
-        ('m. I enjoy the support from friends and family', 'resp_4_m'),
-        ('n. I feel bad about myself or that I am a failure or have let myself or my family down', 'resp_4_n'),
-        ('o. I have poor appetite or I am over-eating', 'resp_4_o'),
-        ('p. I feel down, depressed, hopeless, tired or have little energy', 'resp_4_p'),
-        ('q. I have trouble falling asleep, staying asleep, or sleeping too much', 'resp_4_q'),
-        ('r. I have no interest or pleasure in doing things', 'resp_4_r'),
-        ('s. I have trouble concentrating on things, such as reading the newspaper, or watching TV', 'resp_4_s'),
-        ('t. I think I would be better off dead or better off hurting myself in some way', 'resp_4_t'),
-    ]
-    
-    sections = []
-    
-    sections.append(html.Div(className="questionnaire-section", children=[
-        html.H5("1. Family Medical History", className="fw-semibold"),
-        html.P("Have any of your family members experienced any of the following conditions?", className="text-muted small mb-3")
-    ]))
-    
-    for q, qid in family_questions:
-        sections.append(html.Div(className="mb-3", children=[
-            html.P(q, className='question-label mb-2'),
-            dbc.RadioItems(
-                id=f'radio-{qid}',
-                options=[
-                    {'label': ' Grand Parent(s) ', 'value': 'Grand Parent(s)'},
-                    {'label': ' Parent(s) ', 'value': 'Parent(s)'},
-                    {'label': ' Uncle/Aunty ', 'value': 'Uncle/Aunty'},
-                    {'label': ' Nobody ', 'value': 'Nobody'}
-                ],
-                value='Grand Parent(s)',
-                inline=True,
-                className="custom-radio"
-            )
-        ]))
-    
-    sections.append(html.Hr(className="section-divider"))
-    sections.append(html.Div(className="questionnaire-section", children=[
-        html.H5("2. Personal Medical History", className="fw-semibold"),
-        html.P("Do you have any of the following condition(s) that you are managing?", className="text-muted small mb-3")
-    ]))
-    
-    for q, qid in personal_questions:
-        sections.append(html.Div(className="mb-3", children=[
-            html.P(q, className='question-label mb-2'),
-            dbc.RadioItems(
-                id=f'radio-{qid}',
-                options=[
-                    {'label': ' Yes ', 'value': 'Yes'},
-                    {'label': ' No ', 'value': 'No'},
-                    {'label': ' Yes, but not on Medication ', 'value': 'Yes, but not on Medication'}
-                ],
-                value='Yes',
-                inline=True,
-                className="custom-radio"
-            )
-        ]))
-    
-    sections.append(html.Hr(className="section-divider"))
-    sections.append(html.Div(className="questionnaire-section", children=[
-        html.H5("3. Personal Surgical History", className="fw-semibold"),
-        html.P("Have you ever had surgery for any of the following?", className="text-muted small mb-3")
-    ]))
-    
-    for q, qid in surgical_questions:
-        sections.append(html.Div(className="mb-3", children=[
-            html.P(q, className='question-label mb-2'),
-            dbc.RadioItems(
-                id=f'radio-{qid}',
-                options=[
-                    {'label': ' Yes ', 'value': 'Yes'},
-                    {'label': ' No ', 'value': 'No'}
-                ],
-                value='Yes',
-                inline=True,
-                className="custom-radio"
-            )
-        ]))
-    
-    sections.append(html.Hr(className="section-divider"))
-    sections.append(html.Div(className="questionnaire-section", children=[
-        html.H5("4. Health Survey Questionnaire", className="fw-semibold"),
-        html.P("Kindly provide valid responses to the following questions", className="text-muted small mb-3")
-    ]))
-    
-    for q, qid in wellness_questions:
-        sections.append(html.Div(className="mb-3", children=[
-            html.P(q, className='question-label mb-2'),
-            dbc.RadioItems(
-                id=f'radio-{qid}',
-                options=[
-                    {'label': ' Never ', 'value': 'Never'},
-                    {'label': ' Occasional ', 'value': 'Occasional'},
-                    {'label': ' Always ', 'value': 'Always'},
-                    {'label': ' I Do Not Know ', 'value': 'I Do Not Know'}
-                ],
-                value='Never',
-                inline=True,
-                className="custom-radio"
-            )
-        ]))
-    
-    return html.Div(sections)
-
-
 @app.callback(
     Output('questionnaire-responses', 'data'),
     [Input('radio-resp_1_a', 'value'),
@@ -1015,108 +1308,17 @@ def update_providers(state, enrollee_id):
     return [{'label': p, 'value': p} for p in providers]
 
 
-def get_providers_for_client_state(client, state, enrollee_id=None):
-    if client == 'UNITED BANK FOR AFRICA':
-        if state == 'UBA HQ':
-            return ['UBA Head Office (CERBA Onsite) - Marina, Lagos Island']
-        elif state == 'RIVERS':
-            return [
-                'PONYX HOSPITALS LTD - Plot 26,presidential estate, GRA phase iii, opp. NDDC H/Qrts, port- harcourt/ Aba expressway',
-                'UNION DIAGNOSTICS - Finima Street, PortHarcourt, Rivers'
-            ]
-    
-    if client == 'STANDARD CHARTERED BANK NIGERIA LIMITED':
-        base_providers = list(wellness_providers.loc[wellness_providers['STATE'] == state, 'PROVIDER'].unique())
-        if state == 'LAGOS':
-            return base_providers + ['Onsite - SCB Head Office - 142, Ahmadu Bello Way, Victoria Island']
-        elif state == 'RIVERS' or state == 'RIVERS ':
-            return base_providers + ['Onsite - SCB Office, 143, Port Harcourt Aba Express Road (F-0)']
-        elif state == 'FCT':
-            return base_providers + ['Onsite - SCB Office, 374 Ademola Adetokunbo Crescent Wuse II, Beside Visa/Airtel Building']
-    
-    if client == 'TRANSCORP POWER UGHELLI' and state == 'DELTA':
-        return list(wellness_providers.loc[wellness_providers['STATE'] == state, 'PROVIDER'].unique()) + ['AVON MEDICAL SITE CLINIC, Ughelli']
-    
-    if client == 'TRANS AFAM POWER PLANT LIMITED' and state == 'RIVERS':
-        return list(wellness_providers.loc[wellness_providers['STATE'] == state, 'PROVIDER'].unique()) + ['AVON MEDICAL SITE CLINIC, Afam']
-    
-    if client == 'TULIP COCOA PROCESSING' and state == 'OGUN':
-        return list(wellness_providers.loc[wellness_providers['STATE'] == state, 'PROVIDER'].unique()) + ['AMAZING GRACE HOSPITAL - 7, Iloro Street, Ijebu-Ode, Ogun State']
-    
-    if client in ['HEIRS HOLDINGS', 'TRANSCORP PLC', 'TONY ELUMELU FOUNDATION'] and state == 'LAGOS':
-        relation = wellness_df.loc[wellness_df['memberno'] == enrollee_id, 'Relation'].values[0]
-        if relation in ['MEMBER', 'FEMALE MEMBER', 'MALE MEMBER']:
-            return ['AVON Medical - Onsite']
-        return list(wellness_providers.loc[wellness_providers['STATE'] == state, 'ProviderLoc'].unique())
-    
-    if client == 'AFRILAND PROPERTIES PLC' and state == 'LAGOS':
-        return list(wellness_providers.loc[wellness_providers['STATE'] == state, 'PROVIDER'].unique()) + ['AVON Medical - Onsite']
-    
-    if client == 'TRANSCORP HOTELS ABUJA' and state == 'FCT':
-        return list(wellness_providers.loc[wellness_providers['STATE'] == state, 'PROVIDER'].unique()) + ['AVON Medical - Onsite']
-    
-    if client == 'PIVOT GIS LIMITED' and state == 'LAGOS':
-        return list(wellness_providers.loc[wellness_providers['STATE'] == state, 'PROVIDER'].unique()) + [
-            'MECURE HEALTHCARE, OSHODI - Debo Industrial Cmpd, Plot 6, Block H, Oshodi Industrial Scheme',
-            'MECURE HEALTHCARE, LEKKI - Niyi Okunubi Street, Off Admiralty way. Lekki phase 1',
-            'CLINIX HEALTHCARE, ILUPEJU - Plot B, BLKXII, Alhaji Adejumo Avenue, Ilupeju, Lagos',
-            'CLINIX HEALTHCARE, FESTAC - Dele Orisabiyi Street, Amuwo Odofin, Lagos'
-        ]
-    
-    if client == 'VERTEVILLE ENERGY':
-        if state == 'LAGOS':
-            return ['Union Diagnostics, V/I - 5 Eletu Ogabi Street, Off Adeola Odeku, Victoria Island, Lagos', 
-                    'CERBA Lancet, V/I - 3 Babatunde Jose Street, Adetokunbo Ademola']
-        elif state == 'DELTA':
-            return ['Union Diagnostics and Clinical Services - Onsite']
-        elif state == 'BORNO':
-            return ['Kanem Hospital and Maternity - 152 Tafewa Balewa road, Opp Lamisula Police station, Mafoni ward, Maiduguri.']
-        elif state == 'RIVERS':
-            return ['Union Diagnostic - Port-Harcourt: 2, Finima Street, Old GRA, Opp. Leventis bus-stop)']
-    
-    if client == 'PETROSTUFF NIGERIA LIMITED':
-        if state == 'LAGOS':
-            return ['BEACON HEALTH - No 70, Fatai Arobieke Street, Lekki Phase 1, Lagos',
-                    'AFRIGLOBAL MEDICARE DIAGNOSTIC CENTRE - 8 Mobolaji Bank Anthony Way Ikeja',
-                    'UNION DIAGNOSTICS - 5,Eletu Ogabi street off Adeola odeku V.I']
-        elif state == 'ABUJA':
-            return ['BODY AFFAIRS DIAGNOSTICS - 1349, Ahmadu Bello Way, Garki 2, Abuja']
-        elif state == 'RIVERS':
-            return ['PONYX HOSPITALS LTD - Plot 26, Presidential Estate, GRA Phase III, opp. NDDC H/Qrts, Port-Harcourt/Aba Expressway']
-    
-    if client == 'TRANSCORP HILTON HOTEL ABUJA' and state == 'ABUJA':
-        return ['TRANSCORP/E-CLINIC WELLNESS']
-    
-    if client == 'REX INSURANCE LTD':
-        if state == 'LAGOS':
-            return ['AFRIGLOBAL MEDICARE DIAGNOSTIC CENTRE - Plot 1192A Kasumu Ekemode St, Victoria Island, Lagos',
-                    'CLINIX HEALTHCARE - Plot B, BLKXII, Alhaji Adejumo Avenue, Ilupeju, Lagos']
-        elif state == 'RIVERS':
-            return ['PONYX HOSPITALS LTD - Plot 26, Presidential Estate, GRA Phase III, opp. NDDC H/Qrts, Port-Harcourt/Aba Expressway']
-        elif state == 'DELTA':
-            return ['ECHOLAB - 375B Nnebisi Road, Umuagu, Asaba, Delta']
-        elif state == 'OYO':
-            return ['BEACONHEALTH - 1, C.S Ola Street, Opposite Boldlink Ltd, Henry Tee Bus Stop, Ring Road, Ibadan']
-        elif state == 'KADUNA':
-            return ['HARMONY HOSPITAL LTD - 74, Narayi Road, Barnawa, Kaduna']
-        elif state == 'KANO':
-            return ['RAYSCAN DIAGNOSTICS LTD - Plot 4 Gyadi Court Road, Kano']
-    
-    return list(wellness_providers.loc[wellness_providers['STATE'] == state, 'ProviderLoc'].unique())
-
-
 @app.callback(
     [Output('session-radio-container', 'children'),
      Output('date-picker-row', 'style'),
      Output('session-store', 'data')],
     [Input('state-select', 'value'),
      Input('provider-select', 'value'),
-     Input('date-picker', 'date'),
-     Input('session-radio', 'value')],
+     Input('date-picker', 'date')],
     [State('enrollee-id-input', 'value'),
      State('session-store', 'data')]
 )
-def update_sessions(state, provider, selected_date, session_radio_value, enrollee_id, current_session):
+def update_sessions(state, provider, selected_date, enrollee_id, current_session):
     if not enrollee_id:
         return html.Div(), {'display': 'none'}, ''
     
@@ -1141,7 +1343,6 @@ def update_sessions(state, provider, selected_date, session_radio_value, enrolle
             if not selected_date:
                 return dbc.Alert("Please select a date first", color="warning"), {'display': 'block'}, current_session
             
-            # Reload filled data
             global filled_wellness_df
             query2 = 'select MemberNo, MemberName, Client, email, state, selected_provider, Wellness_benefits, selected_date, selected_session, date_submitted from demo_tbl_annual_wellness_enrollee_data a where a.PolicyEndDate = (select max(PolicyEndDate) from demo_tbl_annual_wellness_enrollee_data b where a.MemberNo = b.MemberNo)'
             with engine.connect() as conn:
@@ -1169,11 +1370,20 @@ def update_sessions(state, provider, selected_date, session_radio_value, enrolle
                     dbc.RadioItems(
                         id='session-radio',
                         options=[{'label': s, 'value': s} for s in available_sessions],
-                        value=session_radio_value if session_radio_value in available_sessions else None,
+                        value=current_session if current_session in available_sessions else None,
                         inline=True
-                    )], {'display': 'block'}, session_radio_value if session_radio_value else current_session
+                    )], {'display': 'block'}, current_session if current_session else ''
     
     return html.Div(), {'display': 'block'}, ''
+
+
+@app.callback(
+    Output('session-store', 'data', allow_duplicate=True),
+    Input('session-radio', 'value'),
+    prevent_initial_call=True
+)
+def update_session_store(session_value):
+    return session_value if session_value else ''
 
 
 @app.callback(
@@ -1359,173 +1569,6 @@ def submit_form(submit_clicks, close_clicks, enrollee_id, email, mobile, gender,
         return True, success_msg
     
     return True, success_msg
-
-
-def send_confirmation_email(enrollee_id, member_name, email, provider, benefits, selected_date, session, client, date_communicated=False):
-    myemail = 'noreply@avonhealthcare.com'
-    password = os.environ.get('email_password')
-    
-    msg_befor_table = f'''
-    Dear {member_name},<br><br>
-    We hope you are staying safe.<br><br>
-    You have been scheduled for a wellness screening at your selected provider, see the below table for details.<br><br>
-    '''
-    
-    wellness_table = {
-        "Appointment Date": [selected_date + ' - ' + session] if session and not date_communicated else [selected_date],
-        "Wellness Facility": [provider],
-        "Wellness Benefits": [benefits]
-    }
-    
-    wellness_table_html = pd.DataFrame(wellness_table).to_html(index=False, escape=False)
-    
-    table_html = f"""
-    <style>
-    table {{
-            border: 1px solid #1C6EA4;
-            background-color: #EEEEEE;
-            width: 100%;
-            text-align: left;
-            border-collapse: collapse;
-            }}
-            table td, table th {{
-            border: 1px solid #AAAAAA;
-            padding: 3px 2px;
-            }}
-            table tbody td {{
-            font-size: 13px;
-            }}
-            table thead {{
-            background: #59058D;
-            border-bottom: 2px solid #444444;
-            }}
-            table thead th {{
-            font-size: 15px;
-            font-weight: bold;
-            color: #FFFFFF;
-            border-left: 2px solid #D0E4F5;
-            }}
-            table thead th:first-child {{
-            border-left: none;
-            }}
-    </style>
-    <table>
-    {wellness_table_html}
-    </table>
-    """
-    
-    text_after_table = f'''
-    <br>Kindly note the following requirements for your wellness exercise:<br><br>
-    -Present at the hospital with your Avon member ID number ({enrollee_id})/ Ecard.<br>
-    -Provide the facility with your valid email address to mail your result.<br>
-    -Visit your designated centers between the hours of 8 am - 11 am any day of the week from the scheduled date communicated.<br>
-    -Arrive at the facility fasting i.e. last meals should be before 9 pm the previous night and nothing should be eaten that morning before the test.
-    You are allowed to drink up to two cups of water.<br><br>
-    For the best results of your screening, it is advisable for blood tests to be done on or before 10 am.<br><br>
-    Your results will be strictly confidential and will be sent to you directly via your email. You are advised to review
-    your results with your primary care provider for relevant medical advice.<br><br>
-    <b>Kindly note that your wellness result will only be available two (2) weeks after your visit to the provider for your wellness check.</b><br><br>
-    Should you require assistance at any time or wish to make any complaint about the service at any of the facilities, 
-    please contact our Call-Center at 0700-277-9800  or send us a chat on WhatsApp at 0912-603-9532. 
-    You can also send us an email at callcentre@avonhealthcare.com. Please be assured that an agent would always be on standby to assist you.<br><br>
-    Thank you for choosing Avon HMO,<br><br>
-    Medical Services.<br>
-    '''
-    
-    text_after_table1 = f'''
-    <br>Kindly note that wellness exercise at your selected facility is strictly by appointment and
-    and you are expected to be available at the facility on the appointment date as selected by you.<br><br>
-    Also, note that you will be required to:<br><br>
-    -Present at the facility with your Avon member ID number ({enrollee_id})/ Ecard.<br>
-    -Provide the facility with your valid email address to mail your result.<br>
-    -You are advised to be present at your selected facility 15 mins before your scheduled time.<br><br>
-    Your results will be strictly confidential and will be sent to you directly via your email. You are advised to review
-    your results with your primary care provider for relevant medical advice.<br><br>
-    <b>Kindly note that your wellness result will only be available two (2) weeks after your visit to the provider for your wellness check.</b><br><br>
-    Should you require assistance at any time or wish to make any complaint about the service at any of the facilities, 
-    please contact our Call-Center at 0700-277-9800  or send us a chat on WhatsApp at 0912-603-9532. 
-    You can also send us an email at callcentre@avonhealthcare.com. Please be assured that an agent would always be on standby to assist you.<br><br>
-    Thank you for choosing Avon HMO,<br><br>
-    Medical Services.<br>
-    '''
-    
-    head_office_msg = f'''
-    Dear {member_name},<br><br>
-    We hope you are staying safe.<br><br>
-    You have been scheduled for a wellness screening at {provider}.<br><br>
-    Find listed below your wellness benefits:<br><br><b>{benefits}</b>.<br><br>
-    Kindly note the following regarding your wellness appointment:<br><br>
-    - HR will reach out to you with a scheduled date and time for your annual wellness.<br><br>
-    - Once scheduled, you are to present your Avon HMO ID card or member ID - {enrollee_id} at the point of accessing your annual wellness check.<br><br>
-    - The wellness exercise will take place at the designated floor which will be communicated to you by the HR between 9 am and 4 pm from Monday – Friday. <br><br>
-    - For the most accurate fasting blood sugar test results, it is advisable for blood tests to be done before 10am. <br><br>
-    - Staff results will be sent to the email addresses provided by them to the wellness providers.<br><br>
-    - There will be consultation with a physician to review immediate test results on-site while other test results that are not readily available will be reviewed by a physician at your Primary Care Provider.<br><br>
-    Should you require assistance at any time or wish to make any complaint about the service rendered during this wellness exercise,
-    please contact our Call-Center at 0700-277-9800 or send us a chat on WhatsApp at 0912-603-9532.
-    You can also send us an email at callcentre@avonhealthcare.com. Please be assured that an agent would always be on standby to assist you.<br><br>
-    Thank you for choosing Avon HMO.<br><br>
-    Medical Services.<br>
-    '''
-    
-    pivotgis_msg = f'''
-    <br>Kindly note that this wellness activation is only valid till the 31st of December, 2024.<br><br>
-    Also, note that you will be required to:<br><br>
-    -Present at the hospital with your Avon member ID number ({enrollee_id})/ Ecard.<br>
-    -Provide the facility with your valid email address to mail your result.<br>
-    -You are advised to be present at your selected facility 15 mins before your scheduled time.<br><br>
-    Your results will be strictly confidential and will be sent to you directly via your email. You are advised to review
-    your results with your primary care provider for relevant medical advice.<br><br>
-    <b>Kindly note that your wellness result will only be available two (2) weeks after your visit to the provider for your wellness check.</b><br><br>
-    Should you require assistance at any time or wish to make any complaint about the service at any of the facilities, 
-    please contact our Call-Center at 0700-277-9800  or send us a chat on WhatsApp at 0912-603-9532. 
-    You can also send us an email at callcentre@avonhealthcare.com. Please be assured that an agent would always be on standby to assist you.<br><br>
-    Thank you for choosing Avon HMO,<br><br>
-    Medical Services.<br>
-    '''
-    
-    email_sent = False
-    email_error = ''
-    
-    if client == 'UNITED BANK FOR AFRICA':
-        if 'UBA Head Office' in provider:
-            full_message = msg_befor_table + table_html + head_office_msg
-        elif 'CERBA LANCET' in provider or 'CERBA LANCET NIGERIA' in provider:
-            full_message = msg_befor_table + table_html + text_after_table1
-        else:
-            full_message = msg_befor_table + table_html + text_after_table
-    elif client == 'PIVOT GIS LIMITED' or client == 'PIVOT   GIS LIMITED':
-        full_message = msg_befor_table + table_html + pivotgis_msg
-    else:
-        full_message = msg_befor_table + table_html + text_after_table
-    
-    bcc_email_list = ['ifeoluwa.adeniyi@avonhealthcare.com', 'ifeoluwa.adeniyi@avonhealthcare.com']
-    
-    if provider in ['ECHOLAB - Opposite mararaba medical centre, Tipper Garage, Mararaba',
-                    'TOBIS CLINIC - Chief Melford Okilo Road Opposite Sobaz Filling Station, Akenfa –Epie',
-                    'ECHOLAB - 375B Nnebisi Road, Umuagu, Asaba']:
-        bcc_email_list.extend(['ifeoluwa.adeniyi@avonhealthcare.com', 'ifeoluwa.adeniyi@avonhealthcare.com'])
-    
-    try:
-        server = smtplib.SMTP('smtp.office365.com', 587)
-        server.starttls()
-        server.login(myemail, password)
-        
-        msg = MIMEMultipart()
-        msg['From'] = 'AVON HMO Client Services'
-        msg['To'] = email
-        msg['Bcc'] = ', '.join(bcc_email_list)
-        msg['Subject'] = 'AVON ENROLLEE WELLNESS APPOINTMENT CONFIRMATION'
-        msg.attach(MIMEText(full_message, 'html'))
-        
-        server.sendmail(myemail, [email] + bcc_email_list, msg.as_string())
-        server.quit()
-        email_sent = True
-    except Exception as e:
-        email_error = str(e)
-        print(f"Email error: {e}")
-    
-    return email_sent, email_error
 
 
 if __name__ == '__main__':
